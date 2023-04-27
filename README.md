@@ -7,7 +7,7 @@ We propose SparseFusion, a novel multi-sensor 3D detection method that exclusive
 
 ## Overview
 ![teaser](teaser.png)
-Compared to existing fusion algorithms, SparseFusion achieves state-of-the-art performance as well as the fastest inference speed on nuScenes test set. †: Official code of \cite{chen2022autoalignv2} uses flip as test-time augmentation. ‡: We use BEVFusion-base results in the official repository of BEVFusion to match the input resolutions of other methods. $\S:$ Swin-T is adopted as image backbone.
+Compared to existing fusion algorithms, SparseFusion achieves state-of-the-art performance as well as the fastest inference speed on nuScenes test set. †: Official code of AutoAlignV2 uses flip as test-time augmentation. ‡: We use BEVFusion-base results in the official repository of BEVFusion to match the input resolutions of other methods. $\S:$ Swin-T is adopted as image backbone.
 ## nuScene Performance
 
 ### Validataion Set
