@@ -9,7 +9,7 @@ We propose SparseFusion, a novel multi-sensor 3D detection method that exclusive
 ![teaser](teaser.png)
 Compared to existing fusion algorithms, SparseFusion achieves state-of-the-art performance as well as the fastest inference speed on nuScenes test set. †: Official code of AutoAlignV2 uses flip as test-time augmentation. ‡: We use BEVFusion-base results in the official repository of BEVFusion to match the input resolutions of other methods. $\S:$ Swin-T is adopted as image backbone.
 ## nuScene Performance
-
+We do not use any test-time augmentations or model ensembles.
 ### Validataion Set
 
 | Image Backbone | mAP    | NDS    |
@@ -22,3 +22,5 @@ Compared to existing fusion algorithms, SparseFusion achieves state-of-the-art p
 | Image Backbone | mAP    | NDS    |
 | --------- | ------ | ------ |
 | ResNet50  | 72.0 | 73.8 |
+
+
