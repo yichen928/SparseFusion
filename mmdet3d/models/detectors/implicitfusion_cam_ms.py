@@ -17,7 +17,11 @@ from .. import builder
 from .mvx_two_stage import MVXTwoStageDetector
 from mmdet3d.ops import Voxelization
 
-index = 0
+
+# index = 0
+# head_time_total = 0
+# pts_time_total = 0
+# img_time_total = 0
 
 @DETECTORS.register_module()
 class ImplicitFusionDetector_3D_Cam_MS(MVXTwoStageDetector):
@@ -75,6 +79,7 @@ class ImplicitFusionDetector_3D_Cam_MS(MVXTwoStageDetector):
             elif img.dim() == 5 and img.size(0) > 1:
                 B, N, C, H, W = img.size()
                 img = img.view(B * N, C, H, W)
+
             img_feats = self.img_backbone(img.float())
         else:
             return None
@@ -84,6 +89,10 @@ class ImplicitFusionDetector_3D_Cam_MS(MVXTwoStageDetector):
         # torch.cuda.synchronize()
         # t2 = time.time()
         # print("\nImage Backbone:", t2-t1)
+        # global index
+        # global img_time_total
+        # if index > 30:
+        #     img_time_total = img_time_total + t2 - t1
 
         return img_feats
 
@@ -257,6 +266,7 @@ class ImplicitFusionDetector_3D_Cam_MS(MVXTwoStageDetector):
         # torch.cuda.synchronize()
         # t1 = time.time()
 
+
         voxel_features = self.pts_voxel_encoder(voxels, num_points, coors)
         batch_size = coors[-1, 0] + 1
         x = self.pts_middle_encoder(voxel_features, coors, batch_size)
@@ -272,6 +282,10 @@ class ImplicitFusionDetector_3D_Cam_MS(MVXTwoStageDetector):
         # torch.cuda.synchronize()
         # t2 = time.time()
         # print("Point Backbone:", t2-t1)
+        # global index
+        # global pts_time_total
+        # if index > 30:
+        #     pts_time_total = pts_time_total + t2 - t1
 
         return x
 
@@ -478,6 +492,12 @@ class ImplicitFusionDetector_3D_Cam_MS(MVXTwoStageDetector):
         # torch.cuda.synchronize()
         # t2 = time.time()
         # print("Head:", t2 - t1)
+        # global index
+        # global head_time_total
+        # if index > 30:
+        #     head_time_total = head_time_total + t2 - t1
+        #     print("Average time: %.3f %.3f %.3f %.3f"%(pts_time_total/(index-30), img_time_total/(index-30), head_time_total/(index-30), (pts_time_total+img_time_total+head_time_total)/(index-30)))
+        # index += 1
 
         bbox_results = [
             bbox3d2result(bboxes, scores, labels)

@@ -773,7 +773,7 @@ class FusionTransformer2D_3D_Self(nn.Module):
                 )
             )
 
-    def forward(self, pts_query_feat, pts_query_pos, img_query_feat, img_query_pos):
+    def forward(self, pts_query_feat, pts_query_pos, img_query_feat, img_query_pos, need_weights=False):
         ret_dicts = []
         pts_query_feat = self.pts_projection(pts_query_feat)
         img_query_feat = self.img_projection(img_query_feat)
@@ -789,7 +789,12 @@ class FusionTransformer2D_3D_Self(nn.Module):
             # :param query: B C Pq    :param query_pos: B Pq 3/6
             all_query_feat_raw = all_query_feat.clone()
 
-            all_query_feat = self.decoder[i](all_query_feat, all_query_feat, all_query_pos, all_query_pos)
+            if need_weights:
+                all_query_feat, attn_weights = self.decoder[i](all_query_feat, all_query_feat, all_query_pos, all_query_pos, need_weights=True)
+            else:
+                all_query_feat = self.decoder[i](all_query_feat, all_query_feat, all_query_pos, all_query_pos)
+
+            # all_query_feat = self.decoder[i](all_query_feat, all_query_feat, all_query_pos, all_query_pos)
 
             # if self.fusion_cwa:
             #     all_query_feat_lidar = self.lidar_cwa(all_query_feat_raw[..., :self.num_proposals], all_query_feat[..., :self.num_proposals], all_query_pos[:, :self.num_proposals], all_query_pos[:, self.num_proposals:])
@@ -813,7 +818,11 @@ class FusionTransformer2D_3D_Self(nn.Module):
 
             all_query_pos = res_layer['center'].detach().clone().permute(0, 2, 1)
 
-        return all_query_feat, all_query_pos, ret_dicts
+        # return all_query_feat, all_query_pos, ret_dicts
+        if need_weights:
+            return all_query_feat, all_query_pos, ret_dicts, attn_weights
+        else:
+            return all_query_feat, all_query_pos, ret_dicts
 
 
 class ImageTransformer2D_3D_MS(nn.Module):
@@ -1140,7 +1149,8 @@ class FusionTransformer2D_3D_SepPos_Self(nn.Module):
             # :param query: B C Pq    :param query_pos: B Pq 3/6
 
             pts_query_pos_embed = self.pts_pos[i](pts_query_pos)
-            img_query_pos_embed = self.img_pos[i](img_query_pos)
+            # img_query_pos_embed = self.img_pos[i](img_query_pos)
+            img_query_pos_embed = torch.zeros_like(pts_query_pos_embed)
 
             all_query_pos_embed = torch.cat([pts_query_pos_embed, img_query_pos_embed], dim=2)
             all_query_feat = self.decoder[i](all_query_feat, all_query_feat, all_query_pos_embed, all_query_pos_embed)
@@ -1242,3 +1252,139 @@ class FusionIPOT(nn.Module):
         pts_query_feat = torch.cat([pts_query_feat, img_query_feat_att], dim=1)
 
         return pts_query_feat
+
+class FusionTransformer2D_3D_InvCross(nn.Module):
+    def __init__(self, hidden_channel, num_heads, num_decoder_layers, prediction_heads, ffn_channel, dropout, activation, test_cfg,
+                 query_pos, key_pos, pts_projection, img_projection):
+        super(FusionTransformer2D_3D_InvCross, self).__init__()
+        self.hidden_channel = hidden_channel
+        self.num_heads = num_heads
+        self.num_decoder_layers = num_decoder_layers
+        self.prediction_heads = prediction_heads
+        self.test_cfg = test_cfg
+        self.grid_x_size = test_cfg['grid_size'][0] // test_cfg['out_size_factor']
+        self.grid_y_size = test_cfg['grid_size'][1] // test_cfg['out_size_factor']
+        self.pts_projection = pts_projection
+        self.img_projection = img_projection
+
+        self.decoder = nn.ModuleList()
+        for i in range(self.num_decoder_layers):
+            self.decoder.append(
+                TransformerDecoderLayer(
+                    hidden_channel, num_heads, ffn_channel, dropout, activation,
+                    self_posembed=query_pos[i], cross_posembed=key_pos[i],
+                    cross_only=False
+                )
+            )
+
+    def forward(self, pts_query_feat, pts_query_pos, img_query_feat, img_query_pos):
+        ret_dicts = []
+        pts_query_feat = self.pts_projection(pts_query_feat)
+        img_query_feat = self.img_projection(img_query_feat)
+        for i in range(self.num_decoder_layers):
+            # Transformer Decoder Layer
+            # :param query: B C Pq    :param query_pos: B Pq 3/6
+            img_query_feat = self.decoder[i](img_query_feat, pts_query_feat, img_query_pos, pts_query_pos)
+            # pts_query_feat = self.decoder[i](pts_query_feat, img_query_feat, pts_query_pos, img_query_pos)
+
+            res_layer = self.prediction_heads(img_query_feat)
+
+            res_layer['center'] = res_layer['center'] + img_query_pos.permute(0, 2, 1)
+
+            ret_dicts.append(res_layer)
+
+            img_query_pos = res_layer['center'].detach().clone().permute(0, 2, 1)
+
+        return img_query_feat, img_query_pos, ret_dicts
+
+
+class FusionFFN(nn.Module):
+    def __init__(self, hidden_channel, dropout):
+        super(FusionFFN, self).__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_channel, hidden_channel),
+            nn.LayerNorm(hidden_channel),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_channel, hidden_channel)
+        )
+        self.layernorm = nn.LayerNorm(hidden_channel)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, features):
+        features = features.permute(0, 2, 1)
+        new_features = self.mlp(features)
+        new_features = new_features + self.dropout(features)
+        new_features = self.layernorm(new_features).permute(0, 2, 1)
+
+        return new_features
+
+
+class FusionTransformer2D_3D_MLP(nn.Module):
+    def __init__(self, hidden_channel, num_heads, num_decoder_layers, prediction_heads, ffn_channel, dropout, activation, test_cfg,
+                 query_pos, key_pos, pts_projection, img_projection, fusion_cwa, num_proposals, lidar_query_only, fuse_cat):
+        super(FusionTransformer2D_3D_MLP, self).__init__()
+        self.hidden_channel = hidden_channel
+        self.num_heads = num_heads
+        self.num_decoder_layers = num_decoder_layers
+        self.prediction_heads = prediction_heads
+        self.test_cfg = test_cfg
+        self.grid_x_size = test_cfg['grid_size'][0] // test_cfg['out_size_factor']
+        self.grid_y_size = test_cfg['grid_size'][1] // test_cfg['out_size_factor']
+        self.pts_projection = pts_projection
+        self.img_projection = img_projection
+        self.fusion_cwa = fusion_cwa
+        self.num_proposals = num_proposals
+        self.lidar_query_only = lidar_query_only
+        self.fuse_cat = fuse_cat
+        if self.fusion_cwa:
+            # self.lidar_cwa = FusionCWA(hidden_channel)
+            # self.camera_cwa = FusionCWA(hidden_channel)
+            self.fusion_cwa = FusionCWA_early(hidden_channel)
+
+        self.decoder = nn.ModuleList()
+        for i in range(self.num_decoder_layers):
+            ffn = FusionFFN(hidden_channel, dropout)
+            self.decoder.append(ffn)
+
+    def forward(self, pts_query_feat, pts_query_pos, img_query_feat, img_query_pos):
+        ret_dicts = []
+        pts_query_feat = self.pts_projection(pts_query_feat)
+        img_query_feat = self.img_projection(img_query_feat)
+
+        all_query_feat = torch.cat([pts_query_feat, img_query_feat], dim=2)
+        all_query_pos = torch.cat([pts_query_pos, img_query_pos], dim=1)
+
+        if self.fusion_cwa:
+            all_query_feat = self.fusion_cwa(all_query_feat)
+
+        for i in range(self.num_decoder_layers):
+            # Transformer Decoder Layer
+            # :param query: B C Pq    :param query_pos: B Pq 3/6
+            all_query_feat_raw = all_query_feat.clone()
+
+            all_query_feat = self.decoder[i](all_query_feat)
+
+            # if self.fusion_cwa:
+            #     all_query_feat_lidar = self.lidar_cwa(all_query_feat_raw[..., :self.num_proposals], all_query_feat[..., :self.num_proposals], all_query_pos[:, :self.num_proposals], all_query_pos[:, self.num_proposals:])
+            #     all_query_feat_camera = self.camera_cwa(all_query_feat_raw[..., self.num_proposals:], all_query_feat[..., self.num_proposals:], all_query_pos[:, self.num_proposals:], all_query_pos[:, :self.num_proposals])
+            #     all_query_feat = torch.cat([all_query_feat_lidar, all_query_feat_camera], dim=2)
+
+            if self.fuse_cat:
+                all_query_feat_pred = torch.cat([all_query_feat, all_query_feat_raw], dim=1)
+            else:
+                all_query_feat_pred = all_query_feat
+
+            # Prediction
+            if self.lidar_query_only:
+                res_layer = self.prediction_heads(all_query_feat_pred[..., :self.num_proposals])
+                res_layer['center'] = res_layer['center'] + all_query_pos.permute(0, 2, 1)[..., :self.num_proposals]
+            else:
+                res_layer = self.prediction_heads(all_query_feat_pred)
+                res_layer['center'] = res_layer['center'] + all_query_pos.permute(0, 2, 1)
+
+            ret_dicts.append(res_layer)
+
+            all_query_pos = res_layer['center'].detach().clone().permute(0, 2, 1)
+
+        return all_query_feat, all_query_pos, ret_dicts
+

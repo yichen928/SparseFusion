@@ -156,7 +156,7 @@ class Collect3D(object):
                             'rect', 'Trv2c', 'P2', 'pcd_trans', 'sample_idx',
                             'pcd_scale_factor', 'pcd_rotation', 'pts_filename',
                             'transformation_3d_flow', 'cam_intrinsic', 'lidar2cam_r',
-                            'lidar2cam_t', 'valid_shape', 'img_scale_ratios')):
+                            'lidar2cam_t', 'valid_shape', 'img_scale_ratios', 'pcd_rotation_angle')):
         self.keys = keys
         self.meta_keys = meta_keys
 

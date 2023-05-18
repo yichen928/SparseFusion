@@ -5,7 +5,7 @@ class_names = [
 ]
 voxel_size = [0.075, 0.075, 0.2]
 out_size_factor = 8
-evaluation = dict(interval=2)
+evaluation = dict(interval=3)
 dataset_type = 'NuScenesDataset_wCam'
 data_root = 'data/nuscenes/'
 input_modality = dict(
@@ -46,12 +46,11 @@ train_pipeline = [
         flip_ratio_bev_horizontal=0.5,
         flip_ratio_bev_vertical=0.5),
     # dict(type='PhotoMetricDistortionMultiViewImage', swap_channel=False),
-    dict(type='OurRandomAffine', scaling_ratio_range=(0.9, 1.1), flip_ratio=0.5, flip_sync_3d=True, scaling_sync_view=False),
+    dict(type='OurRandomAffine', scaling_ratio_range=(0.9, 1.1), flip_ratio=0.5, flip_sync_3d=True),
     dict(type='MyResize', img_scale=img_scale, keep_ratio=True),
     dict(type='MyNormalize', **img_norm_cfg),
     dict(type='MyPad', size_divisor=32),
     dict(type='SparseDepth', scale_factors=[4], exp_time=0, depth_sine_L=depth_sine_L, virtual_depth=virtual_depth),
-    # dict(type='SparseDepthCompletion', scale_factors=[4], virtual_depth=virtual_depth),
     # dict(type='SparseDepth', scale_factors=[1], depth_mean=0, depth_var=1),
     dict(type='PointsRangeFilter', point_cloud_range=point_cloud_range),
     dict(type='OurObjectRangeFilter', point_cloud_range=point_cloud_range),
@@ -61,7 +60,7 @@ train_pipeline = [
     dict(type='Collect3D', keys=['points', 'img', 'gt_bboxes_3d', 'gt_labels_3d', 'gt_bboxes', 'gt_labels', 'gt_pts_centers_2d', 'gt_img_centers_2d', 'gt_bboxes_cam_3d', 'sparse_depth', 'gt_visible_3d', 'gt_bboxes_lidar'])
 ]
 test_pipeline = [
-    dict(
+    dict( 
         type='LoadPointsFromFile',
         coord_type='LIDAR',
         load_dim=5,
@@ -89,6 +88,7 @@ test_pipeline = [
             dict(type='MyNormalize', **img_norm_cfg),
             dict(type='MyPad', size_divisor=32),
             dict(type='SparseDepth', scale_factors=[4], depth_sine_L=depth_sine_L, virtual_depth=virtual_depth),
+            # dict(type='SparseDepthCompletion', scale_factors=[4], virtual_depth=virtual_depth),
             # dict(type='SparseDepth', scale_factors=[1], depth_mean=0, depth_var=1),
             dict(
                 type='DefaultFormatBundle3D',
@@ -97,8 +97,53 @@ test_pipeline = [
             dict(type='Collect3D', keys=['points', 'img', 'sparse_depth'])
         ])
 ]
+# test_pipeline = [
+#     dict(
+#         type='LoadPointsFromFile',
+#         coord_type='LIDAR',
+#         load_dim=5,
+#         use_dim=[0, 1, 2, 3, 4],
+#     ),
+#     dict(
+#         type='LoadPointsFromMultiSweeps',
+#         sweeps_num=10,
+#         use_dim=[0, 1, 2, 3, 4],
+#     ),
+#     dict(type='LoadMultiViewImageFromFiles'),
+#     dict(
+#         type='MultiScaleFlipAug3D',
+#         img_scale=img_scale,
+#         pts_scale_ratio=1,
+#         flip=True,
+#         pcd_horizontal_flip=True,
+#         pcd_vertical_flip=True,
+#         # pts_rotation=[0.0, 0.109, -0.109, 0.218, -0.218],
+#         transforms=[
+#             dict( 
+#                 type='OurGlobalRotScaleTrans',
+#                 rot_range=[0, 0],
+#                 scale_ratio_range=[1.0, 1.0],
+#                 translation_std=[0, 0, 0]),
+#             dict(
+#                 type='OurRandomFlip3D',
+#                 sync_2d=False,
+#                 flip_ratio_bev_horizontal=0,
+#                 flip_ratio_bev_vertical=0),
+#             dict(type='OurRandomAffine', scaling_ratio_range=(1, 1), flip_ratio=0, flip_sync_3d=True),
+#             dict(type='MyResize', img_scale=img_scale, keep_ratio=True),
+#             dict(type='MyNormalize', **img_norm_cfg),
+#             dict(type='MyPad', size_divisor=32),
+#             dict(type='SparseDepth', scale_factors=[4], exp_time=0, depth_sine_L=depth_sine_L, virtual_depth=virtual_depth),
+#             # dict(type='SparseDepth', scale_factors=[1], depth_mean=0, depth_var=1),
+#             dict(
+#                 type='DefaultFormatBundle3D',
+#                 class_names=class_names,
+#                 with_label=False),
+#             dict(type='Collect3D', keys=['points', 'img', 'sparse_depth'])
+#         ])
+# ]
 data = dict(
-    samples_per_gpu=4,
+    samples_per_gpu=3,
     workers_per_gpu=4,
     train=dict(
         type='CBGSDataset',
@@ -120,7 +165,6 @@ data = dict(
         num_views=num_views,
         # ann_file=data_root + '/nuscenes_infos_val_with_gt2d.pkl',
         ann_file=data_root + '/nuscenes_infos_val_with_proj2d_wbox3dCL_vis_woRange.pkl',
-        # ann_file=data_root + '/nuscenes_infos_test.pkl',
         load_interval=1,
         pipeline=test_pipeline,
         classes=class_names,
@@ -145,20 +189,38 @@ model = dict(
     freeze_img=False,
     batch_scaling='none',
     encode_depth_input=False,
+    # img_backbone=dict(
+    #     type='ResNet',
+    #     depth=50,
+    #     num_stages=4,
+    #     out_indices=(0, 1, 2, 3),
+    #     frozen_stages=1,
+    #     in_channels=3,
+    #     norm_cfg=dict(type='BN', requires_grad=True),
+    #     norm_eval=True,
+    #     style='pytorch',
+    # ),
     img_backbone=dict(
-        type='ResNet',
-        depth=50,
-        num_stages=4,
+        type='SwinTransformer',
+        embed_dims=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=7,
+        mlp_ratio=4,
+        qkv_bias=True,
+        qk_scale=None,
+        drop_rate=0.,
+        attn_drop_rate=0.,
+        drop_path_rate=0.2,
+        patch_norm=True,
         out_indices=(0, 1, 2, 3),
-        frozen_stages=1,
-        in_channels=3,
-        norm_cfg=dict(type='BN', requires_grad=True),
-        norm_eval=True,
-        style='pytorch',
+        with_cp=False,
+        convert_weights=True,
     ),
     img_neck=dict(
         type='FPN',
-        in_channels=[256, 512, 1024, 2048],
+        # in_channels=[256, 512, 1024, 2048],
+        in_channels=[96, 192, 384, 768],
         out_channels=256,
         num_outs=5),
     pts_voxel_layer=dict(
@@ -278,6 +340,7 @@ model = dict(
         fuse_cat=False,
         virtual_depth=virtual_depth,
         depth_log=False,
+        fetch_depth=False,
         bbox_coder=dict(
             type='TransFusionBBoxCoder',
             pc_range=point_cloud_range[:2],
@@ -340,6 +403,7 @@ model = dict(
             voxel_size=voxel_size,
             out_size_factor=out_size_factor,
             code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
+            img_code_weights=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2],
             point_cloud_range=point_cloud_range)),
     test_cfg=dict(
         pts=dict(
@@ -353,11 +417,11 @@ model = dict(
         )))
 optimizer = dict(
     type='AdamW',
-    lr=0.0001,
+    lr=0.000075,
     weight_decay=0.01,
     paramwise_cfg=dict(
         custom_keys={
-            'img_backbone': dict(lr_mult=0.1),
+            'img_backbone': dict(lr_mult=0.1, decay_mult=5),
             'img_neck': dict(lr_mult=0.1),
             'pts_voxel_layer': dict(lr_mult=0.1),
             'pts_voxel_encoder': dict(lr_mult=0.1),
@@ -368,9 +432,13 @@ optimizer = dict(
             'pts_bbox_head.class_encoding': dict(lr_mult=0.1),
             'pts_bbox_head.heatmap_head': dict(lr_mult=0.1),
             'pts_bbox_head.shared_conv': dict(lr_mult=0.1),
+            'absolute_pos_embed': dict(decay_mult=0.),
+            'relative_position_bias_table': dict(decay_mult=0.),
+            'norm': dict(decay_mult=0.)
         }),
 )  # for 8gpu * 2sample_per_gpu
 optimizer_config = dict(grad_clip=dict(max_norm=0.1, norm_type=2))
+# optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
 
 lr_config = dict(
     policy='cyclic',
@@ -398,7 +466,7 @@ work_dir = None
 # load_from = 'checkpoints/LC_fusion_voxel0075_R50_20pc.pth'
 # load_from = 'checkpoints/LC_Implicitfusion_voxel0075_R50_20pc.pth'
 # load_from = 'checkpoints/LC_Implicitfusion_wohead_voxel0075_R50_20pc.pth'
-load_from = 'checkpoints/LC_Implicitfusion_voxel0075_R50_mask_coco_trainval.pth'
+load_from = 'checkpoints/LC_Implicitfusion_MSMDFusion_voxel0075_SwinT_mask_trainval.pth'
 resume_from = None
 workflow = [('train', 1)]
 gpu_ids = range(0, 8)

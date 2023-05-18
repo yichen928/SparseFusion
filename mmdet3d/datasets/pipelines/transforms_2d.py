@@ -269,7 +269,8 @@ class OurRandomAffine:
 
         results['valid_shape'] = np.array(valid_shapes)
         results['img_scale_ratios'] = np.array(scaling_ratios)
-        results = self._transform_bbox(results, warp_mats, flips, width, height)
+        if 'gt_bboxes' in results:
+            results = self._transform_bbox(results, warp_mats, flips, width, height)
         results = self._transform_camera(results, warp_mats, flips, width)
 
         return results

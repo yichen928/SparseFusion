@@ -185,10 +185,11 @@ class OurRandomFlip3D(object):
         for id in range(len(input_dict['lidar2cam_r'])):
             input_dict['lidar2cam_r'][id] = input_dict['lidar2cam_r'][id] @ matrix
 
-        if input_dict['gt_pts_centers_2d'].shape[0] > 0:
+        if 'gt_pts_centers_2d' in input_dict and input_dict['gt_pts_centers_2d'].shape[0] > 0:
             input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] @ matrix
 
-        input_dict['gt_bboxes_lidar'].flip(direction)
+        if 'gt_bboxes_lidar' in input_dict:
+            input_dict['gt_bboxes_lidar'].flip(direction)
 
     def __call__(self, input_dict):
         """Call function to flip points, values in the ``bbox3d_fields`` and \
@@ -614,7 +615,8 @@ class OurGlobalRotScaleTrans(object):
         for id in range(len(input_dict['lidar2cam_t'])):
             input_dict['lidar2cam_t'][id] = input_dict['lidar2cam_t'][id] - input_dict['lidar2cam_r'][id] @ trans_factor
 
-        input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] + trans_factor
+        if 'gt_pts_centers_2d' in input_dict:
+            input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] + trans_factor
 
         if 'gt_bboxes_lidar' in input_dict:
             input_dict['gt_bboxes_lidar'].translate(trans_factor)
@@ -630,11 +632,7 @@ class OurGlobalRotScaleTrans(object):
                 and keys in input_dict['bbox3d_fields'] are updated \
                 in the result dict.
         """
-        rotation = self.rot_range
-        if not isinstance(rotation, list):
-            rotation = [-rotation, rotation]
-        noise_rotation = np.random.uniform(rotation[0], rotation[1])
-
+        noise_rotation = input_dict['pcd_rotation_angle']
         rot_mat_T = None
         for key in input_dict['bbox3d_fields']:
             if len(input_dict[key].tensor) != 0:
@@ -676,14 +674,14 @@ class OurGlobalRotScaleTrans(object):
         for key in input_dict['bbox3d_fields']:
             input_dict[key].scale(scale)
 
-        if input_dict['gt_img_centers_2d'].shape[0] > 0:
+        if 'gt_img_centers_2d' in input_dict and input_dict['gt_img_centers_2d'].shape[0] > 0:
             if not self.virtual_depth:
                 input_dict['gt_img_centers_2d'][:, 2] *= scale
 
         for id in range(len(input_dict['lidar2cam_t'])):
             input_dict['lidar2cam_t'][id] = input_dict['lidar2cam_t'][id] * scale
 
-        if input_dict['gt_pts_centers_2d'].shape[0] > 0:
+        if 'gt_pts_centers_2d' in input_dict and input_dict['gt_pts_centers_2d'].shape[0] > 0:
             input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] * scale
 
             if not self.virtual_depth:
@@ -706,6 +704,13 @@ class OurGlobalRotScaleTrans(object):
                                          self.scale_ratio_range[1])
         input_dict['pcd_scale_factor'] = scale_factor
 
+    def _random_rotation(self, input_dict):
+        rotation = self.rot_range
+        if not isinstance(rotation, list):
+            rotation = [-rotation, rotation]
+        noise_rotation = np.random.uniform(rotation[0], rotation[1])
+        input_dict['pcd_rotation_angle'] = noise_rotation
+
     def __call__(self, input_dict):
         """Private function to rotate, scale and translate bounding boxes and \
         points.
@@ -721,6 +726,8 @@ class OurGlobalRotScaleTrans(object):
         if 'transformation_3d_flow' not in input_dict:
             input_dict['transformation_3d_flow'] = []
 
+        if 'pcd_rotation_angle' not in input_dict:
+            self._random_rotation(input_dict)
         self._rot_bbox_points(input_dict)
 
         if 'pcd_scale_factor' not in input_dict:

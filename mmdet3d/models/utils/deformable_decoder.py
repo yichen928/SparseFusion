@@ -57,6 +57,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tensor if pos_embed is None else tensor + pos_embed
 
     def forward(self, query, key, query_pos, key_pos, reference_points, level_start_index, spatial_shapes, query_padding_mask=None, input_padding_mask=None):
+
         """
         :param query: B C Pq
         :param key: B C Pk
@@ -91,6 +92,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
                     input_spatial_shapes=spatial_shapes, input_level_start_index=level_start_index,
                     input_padding_mask=input_padding_mask
                 )
+
 
         query2 = query2.permute(1, 0, 2)
         query = query + self.dropout2(query2)

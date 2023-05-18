@@ -132,10 +132,11 @@ class CameraCat(nn.Module):
 
         return pred
 
+
 class ImageTransformer_Cam_3D_MS(nn.Module):
     def __init__(self, num_views, hidden_channel, num_heads, num_decoder_layers, prediction_heads, out_size_factor_img,
                  ffn_channel, dropout, activation, test_cfg, query_pos, key_pos, use_camera=None, bbox_pos=False,
-                 allocentric=False, virtual_depth=False):
+                 allocentric=False, virtual_depth=False, depth_log=False, fetch_depth=False):
         super(ImageTransformer_Cam_3D_MS, self).__init__()
         self.hidden_channel = hidden_channel
         self.num_heads = num_heads
@@ -147,7 +148,9 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
         self.use_camera = use_camera
         self.bbox_pos = bbox_pos
         self.allocentric = allocentric
+        self.depth_log = depth_log
         self.virtual_depth = virtual_depth
+        self.fetch_depth = fetch_depth
 
         self.decoder = nn.ModuleList()
         for i in range(self.num_decoder_layers):
@@ -158,7 +161,7 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
                 )
             )
 
-        if virtual_depth:
+        if self.virtual_depth:
             camera_dim = 18
         else:
             camera_dim = 16
@@ -171,13 +174,11 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
             self.camera_net = CameraSE(4, hidden_channel)
         elif self.use_camera == 'add':
             self.camera_net = CameraAdd(camera_dim, hidden_channel)
-        elif self.use_camera == 'disentangle':
-            self.camera_net_int = CameraSE(4, hidden_channel)
-            self.camera_net = CameraSE(camera_dim, hidden_channel)
         else:
             self.camera_net = CameraCat(camera_dim, hidden_channel)
 
-    def forward(self, img_query_feat, normal_img_query_pos, img_query_view, img_feats, normal_img_feats_pos_stack, lidar2cam_rt, cam_intrinsic, img_metas, input_padding_mask):
+    def forward(self, img_query_feat, normal_img_query_pos, img_query_view, img_feats, normal_img_feats_pos_stack,
+                img_metas):
         num_img_proposals = img_query_feat.shape[-1]
         level_num = len(img_feats)
         batch_size = img_query_feat.shape[0]
@@ -187,105 +188,79 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
         for lvl in range(level_num):
             img_feat = img_feats[lvl]
             h, w = img_feat.shape[-2], img_feat.shape[-1]
-            img_feat_flatten = img_feat.view(batch_size, self.num_views, self.hidden_channel, h*w)  # [bs, num_view, C, h*w]
+            img_feat_flatten = img_feat.view(batch_size, self.num_views, self.hidden_channel,
+                                             h * w)  # [bs, num_view, C, h*w]
             img_feats_flatten.append(img_feat_flatten)
-            level_start_index.append(level_start_index[-1] + h*w)
+            level_start_index.append(level_start_index[-1] + h * w)
+
             spatial_shapes.append([h, w])
         level_start_index = level_start_index[:-1]
         level_start_index = torch.LongTensor(level_start_index).to(img_query_feat.device)
         spatial_shapes = torch.LongTensor(spatial_shapes).to(img_query_feat.device)
 
         img_feats_stack = torch.cat(img_feats_flatten, dim=3)  # [bs, num_view, C, h*w (sum)]
-        reference_points = normal_img_query_pos.sigmoid()  # [bs, num_img_proposal, 2]
+        reference_points = normal_img_query_pos[..., :2].sigmoid()  # [bs, num_img_proposal, 2]
         reference_points = reference_points[:, :, None].repeat(1, 1, level_num, 1)
 
         if self.virtual_depth:
-            camera_info = torch.zeros([batch_size, 18, num_img_proposals]).to(img_query_feat.device)
-            camera_info[:, 16:] = 1
+            camera_dim = 18
         else:
-            camera_info = torch.zeros([batch_size, 16, num_img_proposals]).to(img_query_feat.device)
+            camera_dim = 16
 
-        camera_info[:, :9] = lidar2cam_rt[:, :, :3, :3].permute(0, 2, 3, 1).reshape(batch_size, 9, num_img_proposals)
-        camera_info[:, 9:12] = lidar2cam_rt[:, :, :3, 3].permute(0, 2, 1)
-        camera_info[:, 12] = cam_intrinsic[:, :, 0, 0]
-        camera_info[:, 13] = cam_intrinsic[:, :, 1, 1]
-        camera_info[:, 14:16] = cam_intrinsic[:, :, :2, 2].permute(0, 2, 1)
+        camera_info = torch.zeros([batch_size, camera_dim, num_img_proposals]).to(img_query_feat.device)
+        for sample_idx in range(batch_size):
+            sample_img_query_view = img_query_view[sample_idx]  # [num_proposals]
+            for view_idx in range(self.num_views):
+                img_query_view_mask = sample_img_query_view == view_idx
+
+                lidar2cam_r = camera_info.new_tensor(img_metas[sample_idx]['lidar2cam_r'][view_idx])
+                lidar2cam_t = camera_info.new_tensor(img_metas[sample_idx]['lidar2cam_t'][view_idx])
+                cam_intrinsic = camera_info.new_tensor(img_metas[sample_idx]['cam_intrinsic'][view_idx])
+
+                camera_info[sample_idx, :9, img_query_view_mask] = lidar2cam_r.reshape(9, 1)
+                camera_info[sample_idx, 9:12, img_query_view_mask] = lidar2cam_t.reshape(3, 1)
+                camera_info[sample_idx, 12, img_query_view_mask] = cam_intrinsic[0, 0]
+                camera_info[sample_idx, 13, img_query_view_mask] = cam_intrinsic[1, 1]
+                camera_info[sample_idx, 14:16, img_query_view_mask] = cam_intrinsic[:2, 2].reshape(2, 1)
+
+                if self.virtual_depth:
+                    # if 'pcd_scale_factor' in img_metas[sample_idx]:
+                    #     camera_info[sample_idx, 16, img_query_view_mask] = img_metas[sample_idx]['pcd_scale_factor']
+                    # else:
+                    #     camera_info[sample_idx, 16, img_query_view_mask] = 1
+                    if 'img_scale_ratios' in img_metas[sample_idx]:
+                        camera_info[sample_idx, 17, img_query_view_mask] = img_metas[sample_idx]['img_scale_ratios'][view_idx]
+                    else:
+                        camera_info[sample_idx, 17, img_query_view_mask] = 1
 
         ret_dicts = []
 
         for i in range(self.num_decoder_layers):
             img_prev_query_feat = img_query_feat.clone()  # [BS, C, num_proposals]
             img_query_feat = torch.zeros_like(img_query_feat)  # create new container for img query feature
-
             for sample_idx in range(batch_size):
-                if self.virtual_depth and 'pcd_scale_factor' in img_metas[sample_idx]:
-                    camera_info[sample_idx, 16] = img_metas[sample_idx]['pcd_scale_factor']
-                bincount = torch.bincount(img_query_view[sample_idx], minlength=self.num_views)
-                view_mask = bincount > 1
-                max_len = torch.max(bincount)
-                sample_query_feats = torch.zeros([self.num_views, self.hidden_channel, max_len]).type_as(camera_info)
-                samples_normal_query_pos = torch.zeros([self.num_views, max_len, 2]).type_as(camera_info)
-                sample_reference_points = torch.zeros([self.num_views, max_len, level_num, 2]).type_as(camera_info)
-                sample_padding_mask = torch.zeros([self.num_views, max_len], dtype=torch.bool, device=camera_info.device)
-                for view_idx in range(self.num_views):
-                    on_the_image = img_query_view[sample_idx] == view_idx  # [num_on_the_image, ]
-                    if self.virtual_depth and 'img_scale_ratios' in img_metas[sample_idx]:
-                        camera_info[sample_idx, 17, on_the_image] = img_metas[sample_idx]['img_scale_ratios'][view_idx]
-
-                    view_count = bincount[view_idx]
-                    if torch.sum(on_the_image) <= 1:
-                        continue
-
-                    sample_query_feats[view_idx, :, :view_count] = img_prev_query_feat[sample_idx, :, on_the_image]
-                    samples_normal_query_pos[view_idx, :view_count] = normal_img_query_pos[sample_idx, on_the_image]
-                    sample_reference_points[view_idx, :view_count] = reference_points[sample_idx, on_the_image]
-                    sample_padding_mask[view_idx, view_count:] = True
-
-                if input_padding_mask is None:
-                    sample_query_feats[view_mask] = self.decoder[i](
-                        sample_query_feats[view_mask], img_feats_stack[sample_idx, view_mask], samples_normal_query_pos[view_mask],
-                        normal_img_feats_pos_stack.repeat(view_mask.sum(), 1, 1), reference_points=sample_reference_points[view_mask],
-                        level_start_index=level_start_index, spatial_shapes=spatial_shapes,
-                        query_padding_mask=sample_padding_mask[view_mask]
-                    )
-                else:
-                    sample_query_feats[view_mask] = self.decoder[i](
-                        sample_query_feats[view_mask], img_feats_stack[sample_idx, view_mask], samples_normal_query_pos[view_mask],
-                        normal_img_feats_pos_stack.repeat(view_mask.sum(), 1, 1), reference_points=sample_reference_points[view_mask],
-                        level_start_index=level_start_index, spatial_shapes=spatial_shapes,
-                        query_padding_mask=sample_padding_mask[view_mask], input_padding_mask=input_padding_mask[sample_idx,view_mask]
-                    )
-
                 for view_idx in range(self.num_views):
                     on_the_image = img_query_view[sample_idx] == view_idx  # [num_on_the_image, ]
                     if torch.sum(on_the_image) <= 1:
                         continue
-                    view_count = bincount[view_idx]
-                    img_query_feat[sample_idx, :, on_the_image] = sample_query_feats[view_idx, :, :view_count]
+                    img_query_feat_view = img_prev_query_feat[sample_idx, :, on_the_image]  # [C, num_on_the_image]
 
-            # for sample_idx in range(batch_size):
-            #     for view_idx in range(self.num_views):
-            #         on_the_image = img_query_view[sample_idx] == view_idx  # [num_on_the_image, ]
-            #         if torch.sum(on_the_image) <= 1:
-            #             continue
-            #         img_query_feat_view = img_prev_query_feat[sample_idx, :, on_the_image]  # [C, num_on_the_image]
-            #
-            #         img_query_feat_view = self.decoder[i](
-            #             img_query_feat_view[None], img_feats_stack[sample_idx:sample_idx + 1, view_idx],
-            #             normal_img_query_pos[sample_idx:sample_idx + 1, on_the_image], normal_img_feats_pos_stack,
-            #             reference_points=reference_points[sample_idx:sample_idx+1, on_the_image],
-            #             level_start_index=level_start_index, spatial_shapes=spatial_shapes
-            #         )
-            #         img_query_feat[sample_idx, :, on_the_image] = img_query_feat_view.clone()
+                    img_query_feat_view = self.decoder[i](
+                        img_query_feat_view[None], img_feats_stack[sample_idx:sample_idx + 1, view_idx],
+                        normal_img_query_pos[sample_idx:sample_idx + 1, on_the_image], normal_img_feats_pos_stack,
+                        reference_points=reference_points[sample_idx:sample_idx + 1, on_the_image],
+                        level_start_index=level_start_index, spatial_shapes=spatial_shapes
+                    )
+                    img_query_feat[sample_idx, :, on_the_image] = img_query_feat_view.clone()
 
             if self.use_camera is not None and self.use_camera == 'se_sep':
                 img_query_feat = self.camera_net(img_query_feat, camera_info[:, 12:16].clone())
 
-            if self.use_camera is not None and self.use_camera == 'disentangle':
-                img_query_feat_wint = self.camera_net_int(img_query_feat, camera_info[:, 12:16].clone())
-                res_layer = self.prediction_heads(img_query_feat_wint)
-            else:
-                res_layer = self.prediction_heads(img_query_feat)
+            res_layer = self.prediction_heads(img_query_feat)
+            if self.fetch_depth:
+                res_layer['depth_2d'] = res_layer['depth_2d'] + normal_img_query_pos[..., 2:3].permute(0, 2, 1) * 10
+                normal_img_query_pos[..., 2:3] = res_layer['depth_2d'].detach().clone().permute(0, 2, 1) / 10
+
             if self.virtual_depth and 'img_scale_ratios' in img_metas[0]:
                 for sample_idx in range(batch_size):
                     for view_idx in range(self.num_views):
@@ -294,61 +269,82 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
                         res_layer['depth_2d'][sample_idx, :, view_mask] = res_layer['depth_2d'][sample_idx, :, view_mask] * ratio
 
             if 'center_img' in res_layer:
-                res_layer['center_img'] = res_layer['center_img'] + normal_img_query_pos.permute(0, 2, 1)
+                res_layer['center_img'] = res_layer['center_img'] + normal_img_query_pos[..., :2].permute(0, 2, 1)
                 res_layer['center_img'] = res_layer['center_img'].sigmoid()
                 res_layer['dim_img'] = res_layer['dim_img'].sigmoid()
 
-            res_layer['center_2d'] = res_layer['center_2d'] + normal_img_query_pos.permute(0, 2, 1)
-            normal_img_query_pos = res_layer['center_2d'].detach().clone().permute(0, 2, 1)
+            res_layer['center_2d'] = res_layer['center_2d'] + normal_img_query_pos[..., :2].permute(0, 2, 1)
+            normal_img_query_pos[..., :2] = res_layer['center_2d'].detach().clone().permute(0, 2, 1)
 
             res_layer['center_2d'] = res_layer['center_2d'].sigmoid()
 
-            if batch_size > 1 or i == self.num_decoder_layers-1: # only when training
+            if batch_size > 1 or i == self.num_decoder_layers - 1:  # only when training
+                loc_cam_3d = torch.zeros((batch_size, 3, num_img_proposals)).to(normal_img_query_pos.device)
                 center_2d = res_layer['center_2d'].clone().permute(0, 2, 1)  # [bs, num_proposals, 2]
                 depth = res_layer['depth_2d'].clone().permute(0, 2, 1)[..., :1]  # [bs, num_proposals, 1]
-                h, w = img_metas[0]['input_shape'][:2]
-                center_pos = denormalize_pos(center_2d, w, h, sigmoid=False)  # [bs, num_proposals, 2]
-                center_pos = center_pos * depth
-                camera_coords = torch.cat([center_pos, depth], dim=2)  # [bs, num_proposals, 3]
-                loc_cam_3d = torch.matmul(torch.inverse(cam_intrinsic[:, :, :3, :3]), camera_coords.unsqueeze(-1)).squeeze(-1)  # [bs, num_proposals, 3]
+                if self.depth_log:
+                    depth = torch.exp(depth)
+                for sample_idx in range(batch_size):
+                    img_pad_shape = img_metas[sample_idx]['input_shape'][:2]
+                    h, w = img_pad_shape
+                    # img_scale_factor = (
+                    #     center_2d.new_tensor(img_metas[sample_idx]['scale_factor'][:2]
+                    #                           if 'scale_factor' in img_metas[sample_idx].keys() else [1.0, 1.0])
+                    # )
+                    # w = w / img_scale_factor[0]
+                    # h = h / img_scale_factor[1]  # unrequired after 2022/12/16 due to new camera intrinsics
+                    center_sample = denormalize_pos(center_2d[sample_idx:sample_idx + 1], w, h, sigmoid=False)[
+                        0]  # [num_proposal, 2]
+                    depth_sample = depth[sample_idx]  # [num_proposals, 1]
+                    center_sample = center_sample * depth_sample
+                    camera_coords = torch.cat([center_sample, depth_sample], dim=1)  # [num_proposal, 3]
 
-                res_layer['loc_cam_3d'] = loc_cam_3d.permute(0, 2, 1)
+                    for view_idx in range(self.num_views):
+                        view_mask = img_query_view[sample_idx] == view_idx
+                        camera_coords_view = camera_coords[view_mask]  # [N, 3]
+                        cam_intrinsic = center_sample.new_tensor(img_metas[sample_idx]['cam_intrinsic'][view_idx])
+                        coords3d = torch.matmul(torch.inverse(cam_intrinsic), camera_coords_view.unsqueeze(-1)).squeeze(
+                            -1)  # [N, 3]
+
+                        loc_cam_3d[sample_idx, :, view_mask] = coords3d.T
+
+                res_layer['loc_cam_3d'] = loc_cam_3d
 
             ret_dicts.append(res_layer)
 
         if self.use_camera is not None and self.use_camera != 'se_sep':
             img_query_feat = self.camera_net(img_query_feat, camera_info.clone())
 
-        loc_cam_3d = copy.deepcopy(ret_dicts[-1]['loc_cam_3d'].detach()).permute(0, 2, 1)[..., None]
-
-        if self.virtual_depth and 'pcd_scale_factor' in img_metas[0]:
-            for sample_idx in range(batch_size):
-                loc_cam_3d[sample_idx] = loc_cam_3d[sample_idx] * img_metas[sample_idx]['pcd_scale_factor']
-
+        loc_cam_3d = ret_dicts[-1]['loc_cam_3d'].detach().clone().permute(0, 2, 1)[..., None]
         lidar2cam_r = camera_info[:, :9, :].permute(0, 2, 1)
         lidar2cam_r = lidar2cam_r.reshape(batch_size, num_img_proposals, 3, 3)
 
-        lidar2cam_t = camera_info[:, 9:12, :].permute(0, 2, 1)[..., None] 
+        lidar2cam_t = camera_info[:, 9:12, :].permute(0, 2, 1)[..., None]
+
         bev_coords = torch.matmul(torch.inverse(lidar2cam_r), loc_cam_3d - lidar2cam_t)
         bev_coords = bev_coords.squeeze(-1)
 
         bev_coords[..., 0:1] = (bev_coords[..., 0:1] - self.test_cfg['pc_range'][0]) / (
-                    self.test_cfg['pc_range'][3] - self.test_cfg['pc_range'][0])
+                self.test_cfg['pc_range'][3] - self.test_cfg['pc_range'][0])
         bev_coords[..., 1:2] = (bev_coords[..., 1:2] - self.test_cfg['pc_range'][1]) / (
-                    self.test_cfg['pc_range'][4] - self.test_cfg['pc_range'][1])
+                self.test_cfg['pc_range'][4] - self.test_cfg['pc_range'][1])
 
-        bev_coords[..., 0:1] = bev_coords[..., 0:1] * (self.test_cfg['grid_size'][0] // self.test_cfg['out_size_factor'])
-        bev_coords[..., 1:2] = bev_coords[..., 1:2] * (self.test_cfg['grid_size'][1] // self.test_cfg['out_size_factor'])
+        bev_coords[..., 0:1] = bev_coords[..., 0:1] * (
+                    self.test_cfg['grid_size'][0] // self.test_cfg['out_size_factor'])
+        bev_coords[..., 1:2] = bev_coords[..., 1:2] * (
+                    self.test_cfg['grid_size'][1] // self.test_cfg['out_size_factor'])
 
         # if self.bbox_pos:
         #     dims, rots, vels = self.transform_bbox(ret_dicts[-1], camera_info)
         #     bev_coords = torch.cat([bev_coords, rots, vels, dims], dim=2)
-        dims, rots, vels = self.transform_bbox(ret_dicts[-1], camera_info, w, img_metas)
+        dims, rots, vels = self.transform_bbox(ret_dicts[-1], camera_info, w)
+
         bev_coords = torch.cat([bev_coords, rots, vels, dims], dim=2)
 
         return img_query_feat, normal_img_query_pos, bev_coords, camera_info, ret_dicts
 
-    def transform_bbox(self, ret_dict, camera_info, width, img_metas):
+    def transform_bbox(self, ret_dict, camera_info, width):
+
         bs = camera_info.shape[0]
         num_proposal = camera_info.shape[2]
 
@@ -360,11 +356,6 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
         cam_dims = ret_dict['dim_2d'].detach().clone()  # [bs, 3, num_proposals]
         cam_rots = ret_dict['rot_2d'].detach().clone()  # [bs, 2, num_proposals]
         cam_vels = ret_dict['vel_2d'].detach().clone()  # [bs, 2, num_proposals]
-
-        if self.virtual_depth and 'pcd_scale_factor' in img_metas[0]:
-            for sample_id in range(bs):
-                cam_dims[sample_id] = cam_dims[sample_id] + np.log(img_metas[sample_id]['pcd_scale_factor'])
-                cam_vels[sample_id] = cam_vels[sample_id] * img_metas[sample_id]['pcd_scale_factor']
 
         dims = cam_dims[:, [2, 0, 1]]
         dims = dims.permute(0, 2, 1)
@@ -392,30 +383,292 @@ class ImageTransformer_Cam_3D_MS(nn.Module):
         lidar_vels = vels[:, :, [0, 1], 0]
 
         return dims, lidar_rots, lidar_vels
-    #
-    # def camera2lidar(self, camera_coords, lidar2img, img_meta, batch_size):
-    #     # img_pos: [W*H, 2]
-    #
-    #     coords = torch.cat([camera_coords, torch.ones_like(camera_coords[..., :1])], dim=1)  # [N, 4]
-    #
-    #     img2lidars = torch.inverse(lidar2img)
-    #     coords3d = torch.matmul(img2lidars, coords.unsqueeze(-1)).squeeze(-1)[..., :3]  # [N, 3]
-    #
-    #     if batch_size > 1:
-    #         coords3d = apply_3d_transformation(coords3d, 'LIDAR', img_meta, reverse=False).detach()
-    #
-    #     coords3d[..., 0:1] = (coords3d[..., 0:1] - self.test_cfg['pc_range'][0]) / (
-    #                 self.test_cfg['pc_range'][3] - self.test_cfg['pc_range'][0])
-    #     coords3d[..., 1:2] = (coords3d[..., 1:2] - self.test_cfg['pc_range'][1]) / (
-    #                 self.test_cfg['pc_range'][4] - self.test_cfg['pc_range'][1])
-    #
-    #     coords3d[..., 0:1] = coords3d[..., 0:1] * (self.test_cfg['grid_size'][0] // self.test_cfg['out_size_factor'])
-    #     coords3d[..., 1:2] = coords3d[..., 1:2] * (self.test_cfg['grid_size'][1] // self.test_cfg['out_size_factor'])
-    #
-    #     coords3d = coords3d[..., :3]  # [N, 2]
-    #     coords3d = coords3d.contiguous().view(coords3d.size(0), 3)
-    #
-    #     return coords3d
+
+    def camera2lidar(self, camera_coords, lidar2img, img_meta, batch_size):
+        # img_pos: [W*H, 2]
+
+        coords = torch.cat([camera_coords, torch.ones_like(camera_coords[..., :1])], dim=1)  # [N, 4]
+
+        img2lidars = torch.inverse(lidar2img)
+        coords3d = torch.matmul(img2lidars, coords.unsqueeze(-1)).squeeze(-1)[..., :3]  # [N, 3]
+
+        if batch_size > 1:
+            coords3d = apply_3d_transformation(coords3d, 'LIDAR', img_meta, reverse=False).detach()
+
+        coords3d[..., 0:1] = (coords3d[..., 0:1] - self.test_cfg['pc_range'][0]) / (
+                self.test_cfg['pc_range'][3] - self.test_cfg['pc_range'][0])
+        coords3d[..., 1:2] = (coords3d[..., 1:2] - self.test_cfg['pc_range'][1]) / (
+                self.test_cfg['pc_range'][4] - self.test_cfg['pc_range'][1])
+
+        coords3d[..., 0:1] = coords3d[..., 0:1] * (self.test_cfg['grid_size'][0] // self.test_cfg['out_size_factor'])
+        coords3d[..., 1:2] = coords3d[..., 1:2] * (self.test_cfg['grid_size'][1] // self.test_cfg['out_size_factor'])
+
+        coords3d = coords3d[..., :3]  # [N, 2]
+        coords3d = coords3d.contiguous().view(coords3d.size(0), 3)
+
+        return coords3d
+
+#
+# class ImageTransformer_Cam_3D_MS(nn.Module):
+#     def __init__(self, num_views, hidden_channel, num_heads, num_decoder_layers, prediction_heads, out_size_factor_img,
+#                  ffn_channel, dropout, activation, test_cfg, query_pos, key_pos, use_camera=None, bbox_pos=False,
+#                  allocentric=False, virtual_depth=False, fetch_depth=False, depth_log=False):
+#         super(ImageTransformer_Cam_3D_MS, self).__init__()
+#         self.hidden_channel = hidden_channel
+#         self.num_heads = num_heads
+#         self.num_decoder_layers = num_decoder_layers
+#         self.prediction_heads = prediction_heads
+#         self.num_views = num_views
+#         self.out_size_factor_img = out_size_factor_img
+#         self.test_cfg = test_cfg
+#         self.use_camera = use_camera
+#         self.bbox_pos = bbox_pos
+#         self.allocentric = allocentric
+#         self.virtual_depth = virtual_depth
+#
+#         self.decoder = nn.ModuleList()
+#         for i in range(self.num_decoder_layers):
+#             self.decoder.append(
+#                 DeformableTransformerDecoderLayer(
+#                     hidden_channel, num_heads, dim_feedforward=ffn_channel, dropout=dropout, activation=activation,
+#                     self_posembed=query_pos[i], cross_posembed=key_pos[i],
+#                 )
+#             )
+#
+#         if virtual_depth:
+#             camera_dim = 18
+#         else:
+#             camera_dim = 16
+#
+#         if use_camera == 'se':
+#             self.camera_net = CameraSE(camera_dim, hidden_channel)
+#         elif self.use_camera == 'se_add':
+#             self.camera_net = CameraSEAdd(camera_dim, hidden_channel)
+#         elif self.use_camera == 'se_sep':
+#             self.camera_net = CameraSE(4, hidden_channel)
+#         elif self.use_camera == 'add':
+#             self.camera_net = CameraAdd(camera_dim, hidden_channel)
+#         elif self.use_camera == 'disentangle':
+#             self.camera_net_int = CameraSE(4, hidden_channel)
+#             self.camera_net = CameraSE(camera_dim, hidden_channel)
+#         else:
+#             self.camera_net = CameraCat(camera_dim, hidden_channel)
+#
+#     def forward(self, img_query_feat, normal_img_query_pos, img_query_view, img_feats, normal_img_feats_pos_stack, lidar2cam_rt, cam_intrinsic, img_metas, input_padding_mask):
+#         num_img_proposals = img_query_feat.shape[-1]
+#         level_num = len(img_feats)
+#         batch_size = img_query_feat.shape[0]
+#         img_feats_flatten = []
+#         level_start_index = [0]
+#         spatial_shapes = []
+#         for lvl in range(level_num):
+#             img_feat = img_feats[lvl]
+#             h, w = img_feat.shape[-2], img_feat.shape[-1]
+#             img_feat_flatten = img_feat.view(batch_size, self.num_views, self.hidden_channel, h*w)  # [bs, num_view, C, h*w]
+#             img_feats_flatten.append(img_feat_flatten)
+#             level_start_index.append(level_start_index[-1] + h*w)
+#             spatial_shapes.append([h, w])
+#         level_start_index = level_start_index[:-1]
+#         level_start_index = torch.LongTensor(level_start_index).to(img_query_feat.device)
+#         spatial_shapes = torch.LongTensor(spatial_shapes).to(img_query_feat.device)
+#
+#         img_feats_stack = torch.cat(img_feats_flatten, dim=3)  # [bs, num_view, C, h*w (sum)]
+#         reference_points = normal_img_query_pos.sigmoid()  # [bs, num_img_proposal, 2]
+#         reference_points = reference_points[:, :, None].repeat(1, 1, level_num, 1)
+#
+#         if self.virtual_depth:
+#             camera_info = torch.zeros([batch_size, 18, num_img_proposals]).to(img_query_feat.device)
+#             camera_info[:, 16:] = 1
+#         else:
+#             camera_info = torch.zeros([batch_size, 16, num_img_proposals]).to(img_query_feat.device)
+#
+#         camera_info[:, :9] = lidar2cam_rt[:, :, :3, :3].permute(0, 2, 3, 1).reshape(batch_size, 9, num_img_proposals)
+#         camera_info[:, 9:12] = lidar2cam_rt[:, :, :3, 3].permute(0, 2, 1)
+#         camera_info[:, 12] = cam_intrinsic[:, :, 0, 0]
+#         camera_info[:, 13] = cam_intrinsic[:, :, 1, 1]
+#         camera_info[:, 14:16] = cam_intrinsic[:, :, :2, 2].permute(0, 2, 1)
+#
+#         ret_dicts = []
+#
+#         for i in range(self.num_decoder_layers):
+#             img_prev_query_feat = img_query_feat.clone()  # [BS, C, num_proposals]
+#             img_query_feat = torch.zeros_like(img_query_feat)  # create new container for img query feature
+#
+#             for sample_idx in range(batch_size):
+#                 if self.virtual_depth and 'pcd_scale_factor' in img_metas[sample_idx]:
+#                     camera_info[sample_idx, 16] = img_metas[sample_idx]['pcd_scale_factor']
+#                 bincount = torch.bincount(img_query_view[sample_idx], minlength=self.num_views)
+#                 view_mask = bincount > 1
+#                 max_len = torch.max(bincount)
+#                 sample_query_feats = torch.zeros([self.num_views, self.hidden_channel, max_len]).type_as(camera_info)
+#                 samples_normal_query_pos = torch.zeros([self.num_views, max_len, 2]).type_as(camera_info)
+#                 sample_reference_points = torch.zeros([self.num_views, max_len, level_num, 2]).type_as(camera_info)
+#                 sample_padding_mask = torch.zeros([self.num_views, max_len], dtype=torch.bool, device=camera_info.device)
+#                 for view_idx in range(self.num_views):
+#                     on_the_image = img_query_view[sample_idx] == view_idx  # [num_on_the_image, ]
+#                     if self.virtual_depth and 'img_scale_ratios' in img_metas[sample_idx]:
+#                         camera_info[sample_idx, 17, on_the_image] = img_metas[sample_idx]['img_scale_ratios'][view_idx]
+#
+#                     view_count = bincount[view_idx]
+#                     if torch.sum(on_the_image) <= 1:
+#                         continue
+#
+#                     sample_query_feats[view_idx, :, :view_count] = img_prev_query_feat[sample_idx, :, on_the_image]
+#                     samples_normal_query_pos[view_idx, :view_count] = normal_img_query_pos[sample_idx, on_the_image]
+#                     sample_reference_points[view_idx, :view_count] = reference_points[sample_idx, on_the_image]
+#                     sample_padding_mask[view_idx, view_count:] = True
+#
+#                 if input_padding_mask is None:
+#                     sample_query_feats[view_mask] = self.decoder[i](
+#                         sample_query_feats[view_mask], img_feats_stack[sample_idx, view_mask], samples_normal_query_pos[view_mask],
+#                         normal_img_feats_pos_stack.repeat(view_mask.sum(), 1, 1), reference_points=sample_reference_points[view_mask],
+#                         level_start_index=level_start_index, spatial_shapes=spatial_shapes,
+#                         query_padding_mask=sample_padding_mask[view_mask]
+#                     )
+#                 else:
+#                     sample_query_feats[view_mask] = self.decoder[i](
+#                         sample_query_feats[view_mask], img_feats_stack[sample_idx, view_mask], samples_normal_query_pos[view_mask],
+#                         normal_img_feats_pos_stack.repeat(view_mask.sum(), 1, 1), reference_points=sample_reference_points[view_mask],
+#                         level_start_index=level_start_index, spatial_shapes=spatial_shapes,
+#                         query_padding_mask=sample_padding_mask[view_mask], input_padding_mask=input_padding_mask[sample_idx,view_mask]
+#                     )
+#
+#                 for view_idx in range(self.num_views):
+#                     on_the_image = img_query_view[sample_idx] == view_idx  # [num_on_the_image, ]
+#                     if torch.sum(on_the_image) <= 1:
+#                         continue
+#                     view_count = bincount[view_idx]
+#                     img_query_feat[sample_idx, :, on_the_image] = sample_query_feats[view_idx, :, :view_count]
+#
+#             # for sample_idx in range(batch_size):
+#             #     for view_idx in range(self.num_views):
+#             #         on_the_image = img_query_view[sample_idx] == view_idx  # [num_on_the_image, ]
+#             #         if torch.sum(on_the_image) <= 1:
+#             #             continue
+#             #         img_query_feat_view = img_prev_query_feat[sample_idx, :, on_the_image]  # [C, num_on_the_image]
+#             #
+#             #         img_query_feat_view = self.decoder[i](
+#             #             img_query_feat_view[None], img_feats_stack[sample_idx:sample_idx + 1, view_idx],
+#             #             normal_img_query_pos[sample_idx:sample_idx + 1, on_the_image], normal_img_feats_pos_stack,
+#             #             reference_points=reference_points[sample_idx:sample_idx+1, on_the_image],
+#             #             level_start_index=level_start_index, spatial_shapes=spatial_shapes
+#             #         )
+#             #         img_query_feat[sample_idx, :, on_the_image] = img_query_feat_view.clone()
+#
+#             if self.use_camera is not None and self.use_camera == 'se_sep':
+#                 img_query_feat = self.camera_net(img_query_feat, camera_info[:, 12:16].clone())
+#
+#             if self.use_camera is not None and self.use_camera == 'disentangle':
+#                 img_query_feat_wint = self.camera_net_int(img_query_feat, camera_info[:, 12:16].clone())
+#                 res_layer = self.prediction_heads(img_query_feat_wint)
+#             else:
+#                 res_layer = self.prediction_heads(img_query_feat)
+#             if self.virtual_depth and 'img_scale_ratios' in img_metas[0]:
+#                 for sample_idx in range(batch_size):
+#                     for view_idx in range(self.num_views):
+#                         ratio = img_metas[sample_idx]['img_scale_ratios'][view_idx]
+#                         view_mask = img_query_view[sample_idx] == view_idx
+#                         res_layer['depth_2d'][sample_idx, :, view_mask] = res_layer['depth_2d'][sample_idx, :, view_mask] * ratio
+#
+#             if 'center_img' in res_layer:
+#                 res_layer['center_img'] = res_layer['center_img'] + normal_img_query_pos.permute(0, 2, 1)
+#                 res_layer['center_img'] = res_layer['center_img'].sigmoid()
+#                 res_layer['dim_img'] = res_layer['dim_img'].sigmoid()
+#
+#             res_layer['center_2d'] = res_layer['center_2d'] + normal_img_query_pos.permute(0, 2, 1)
+#             normal_img_query_pos = res_layer['center_2d'].detach().clone().permute(0, 2, 1)
+#
+#             res_layer['center_2d'] = res_layer['center_2d'].sigmoid()
+#
+#             if batch_size > 1 or i == self.num_decoder_layers-1: # only when training
+#                 center_2d = res_layer['center_2d'].clone().permute(0, 2, 1)  # [bs, num_proposals, 2]
+#                 depth = res_layer['depth_2d'].clone().permute(0, 2, 1)[..., :1]  # [bs, num_proposals, 1]
+#                 h, w = img_metas[0]['input_shape'][:2]
+#                 center_pos = denormalize_pos(center_2d, w, h, sigmoid=False)  # [bs, num_proposals, 2]
+#                 center_pos = center_pos * depth
+#                 camera_coords = torch.cat([center_pos, depth], dim=2)  # [bs, num_proposals, 3]
+#                 loc_cam_3d = torch.matmul(torch.inverse(cam_intrinsic[:, :, :3, :3]), camera_coords.unsqueeze(-1)).squeeze(-1)  # [bs, num_proposals, 3]
+#
+#                 res_layer['loc_cam_3d'] = loc_cam_3d.permute(0, 2, 1)
+#
+#             ret_dicts.append(res_layer)
+#
+#         if self.use_camera is not None and self.use_camera != 'se_sep':
+#             img_query_feat = self.camera_net(img_query_feat, camera_info.clone())
+#
+#         loc_cam_3d = copy.deepcopy(ret_dicts[-1]['loc_cam_3d'].detach()).permute(0, 2, 1)[..., None]
+#
+#         if self.virtual_depth and 'pcd_scale_factor' in img_metas[0]:
+#             for sample_idx in range(batch_size):
+#                 loc_cam_3d[sample_idx] = loc_cam_3d[sample_idx] * img_metas[sample_idx]['pcd_scale_factor']
+#
+#         lidar2cam_r = camera_info[:, :9, :].permute(0, 2, 1)
+#         lidar2cam_r = lidar2cam_r.reshape(batch_size, num_img_proposals, 3, 3)
+#
+#         lidar2cam_t = camera_info[:, 9:12, :].permute(0, 2, 1)[..., None]
+#         bev_coords = torch.matmul(torch.inverse(lidar2cam_r), loc_cam_3d - lidar2cam_t)
+#         bev_coords = bev_coords.squeeze(-1)
+#
+#         bev_coords[..., 0:1] = (bev_coords[..., 0:1] - self.test_cfg['pc_range'][0]) / (
+#                     self.test_cfg['pc_range'][3] - self.test_cfg['pc_range'][0])
+#         bev_coords[..., 1:2] = (bev_coords[..., 1:2] - self.test_cfg['pc_range'][1]) / (
+#                     self.test_cfg['pc_range'][4] - self.test_cfg['pc_range'][1])
+#
+#         bev_coords[..., 0:1] = bev_coords[..., 0:1] * (self.test_cfg['grid_size'][0] // self.test_cfg['out_size_factor'])
+#         bev_coords[..., 1:2] = bev_coords[..., 1:2] * (self.test_cfg['grid_size'][1] // self.test_cfg['out_size_factor'])
+#
+#         # if self.bbox_pos:
+#         #     dims, rots, vels = self.transform_bbox(ret_dicts[-1], camera_info)
+#         #     bev_coords = torch.cat([bev_coords, rots, vels, dims], dim=2)
+#         dims, rots, vels = self.transform_bbox(ret_dicts[-1], camera_info, w, img_metas)
+#         bev_coords = torch.cat([bev_coords, rots, vels, dims], dim=2)
+#
+#         return img_query_feat, normal_img_query_pos, bev_coords, camera_info, ret_dicts
+#
+#     def transform_bbox(self, ret_dict, camera_info, width, img_metas):
+#         bs = camera_info.shape[0]
+#         num_proposal = camera_info.shape[2]
+#
+#         lidar2cam_rs = camera_info[:, :9]
+#         lidar2cam_rs = lidar2cam_rs.reshape(bs, 3, 3, num_proposal)
+#         lidar2cam_rs = lidar2cam_rs.permute(0, 3, 1, 2)  # [bs, num_proposals, 3, 3]
+#         cam2lidar_rs = torch.inverse(lidar2cam_rs)
+#
+#         cam_dims = ret_dict['dim_2d'].detach().clone()  # [bs, 3, num_proposals]
+#         cam_rots = ret_dict['rot_2d'].detach().clone()  # [bs, 2, num_proposals]
+#         cam_vels = ret_dict['vel_2d'].detach().clone()  # [bs, 2, num_proposals]
+#
+#         if self.virtual_depth and 'pcd_scale_factor' in img_metas[0]:
+#             for sample_id in range(bs):
+#                 cam_dims[sample_id] = cam_dims[sample_id] + np.log(img_metas[sample_id]['pcd_scale_factor'])
+#                 cam_vels[sample_id] = cam_vels[sample_id] * img_metas[sample_id]['pcd_scale_factor']
+#
+#         dims = cam_dims[:, [2, 0, 1]]
+#         dims = dims.permute(0, 2, 1)
+#
+#         if self.allocentric:
+#             cam_centers = ret_dict['center_2d'].detach().clone()
+#             cam_angle = torch.atan2(cam_rots[:, 0], cam_rots[:, 1])
+#             cam_angle = cam_angle + torch.atan2(cam_centers[:, 0] * width - camera_info[:, 14], camera_info[:, 12])
+#             sin_rots = -torch.sin(cam_angle[:, None])
+#             cos_rots = torch.cos(cam_angle[:, None])
+#
+#         else:
+#             sin_rots = -cam_rots[:, 0:1]
+#             cos_rots = cam_rots[:, 1:2]
+#         rot_dirs = torch.cat([cos_rots, torch.zeros_like(sin_rots), sin_rots], dim=1)  # [bs, 3, num_proposals]
+#         rot_dirs = rot_dirs.permute(0, 2, 1).unsqueeze(-1)  # [bs, num_proposals, 3, 1]
+#         rot_dirs = torch.matmul(cam2lidar_rs, rot_dirs)  # [bs, num_proposals, 3, 1]
+#         lidar_rots = -rot_dirs[:, :, [0, 1], 0]  # [bs, num_proposals, 2]
+#
+#         cam_vels_x = cam_vels[:, 0:1, :]
+#         cam_vels_z = cam_vels[:, 1:2, :]
+#         vels = torch.cat([cam_vels_x, torch.zeros_like(cam_vels_x), cam_vels_z], dim=1)  # [bs, 3, num_proposals]
+#         vels = vels.permute(0, 2, 1).unsqueeze(-1)  # [bs, num_proposals, 3, 1]
+#         vels = torch.matmul(cam2lidar_rs, vels)  # [bs, num_proposals, 3, 1]
+#         lidar_vels = vels[:, :, [0, 1], 0]
+#
+#         return dims, lidar_rots, lidar_vels
 
 
 class ViewTransformer(nn.Module):
@@ -488,10 +741,12 @@ class ViewTransformer(nn.Module):
             # img_query_feat = img_query_feat + bbox_feat
             # img_query_pos = torch.cat([img_query_pos_bev[..., :3], center_3d, camera_t], dim=2)
 
-            if self.virtual_depth:
-                img_query_pos = copy.deepcopy(img_query_pos_bev)
-            else:
-                img_query_pos = copy.deepcopy(img_query_pos_bev[..., :7])
+            # if self.virtual_depth:
+            #     img_query_pos = copy.deepcopy(img_query_pos_bev)
+            # else:
+            #     img_query_pos = copy.deepcopy(img_query_pos_bev[..., :7])
+
+            img_query_pos = copy.deepcopy(img_query_pos_bev[..., :7])
             img_query_pos[..., :2] = inverse_sigmoid((img_query_pos[..., :2] + 12) / 204)
             img_query_pos[..., 2] = inverse_sigmoid((img_query_pos[..., 2] + 10) / 20)
             img_query_pos[..., 3:5] = inverse_sigmoid((img_query_pos[..., 3:5] + 1) / 2)

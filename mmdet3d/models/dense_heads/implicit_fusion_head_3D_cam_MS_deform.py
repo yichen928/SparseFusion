@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import functools
 import pickle
+import os
 from mmcv.cnn import ConvModule, build_conv_layer, kaiming_init
 from mmcv.runner import force_fp32
 from torch import nn
@@ -22,10 +23,14 @@ from mmdet3d.models.utils import FFN, TransformerDecoderLayer, PositionEmbedding
     ProjectionL2Norm, ProjectionLayerNorm, MSCABlock, MSFusion, FusionTransformer2D_3D_Self, ASPP, \
     ImageTransformer_Cam_3D_MS, DepthEncoder, DepthEncoderLarge, DepthEncoderSmall, ViewTransformer, DepthEncoderResNet, \
     ViewTransformerPoint, DepthEncoderResNetSimple, ViewTransformerFFN, PositionEmbeddingLearnedLN, ViewAdder, \
-    FusionTransformer2D_3D_DoubleCross, FusionTransformer2D_3D_SepPos_Self, SE_Block, LayerNorm, ConvLN, FusionIPOT, FFNLN
+    FusionTransformer2D_3D_DoubleCross, FusionTransformer2D_3D_SepPos_Self, SE_Block, LayerNorm, ConvLN, FusionIPOT, FFNLN,\
+    FusionTransformer2D_3D_InvCross, FusionTransformer2D_3D_MLP
+
 from mmdet3d.models.utils.ops.modules import MSDeformAttn
 from mmdet3d.models.utils.deformable_decoder import DeformableTransformerDecoderLayer
 
+
+# sample_index = 0
 
 def denormalize_pos(normal_pos, x_max, y_max):
     max_xy = torch.Tensor([x_max, y_max]).to(normal_pos.device).view(1, 1, 2)
@@ -139,7 +144,9 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                  laplace_loss=False,
                  allocentric=False,
                  fuse_cat=False,
-                 virtual_depth=False
+                 virtual_depth=False,
+                 depth_log=False,
+                 fetch_depth=False
                  ):
         super(ImplicitHead2D_Cam_MS_Deform, self).__init__()
 
@@ -169,13 +176,14 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         self.view_bbox_add = view_bbox_add
         self.bbox_pos = bbox_pos
         self.cross_type = cross_type
-        assert cross_type in ['deform_height', 'range_height']
+        assert cross_type in ['deform_height', 'range_height', 'transfusion']
         self.range_num = range_num
         self.sep_level_pos = sep_level_pos
         self.query_dropout = query_dropout
         self.view_transform_pos_early = view_transform_pos_early
         self.allocentric = allocentric
         self.fuse_cat = fuse_cat
+        self.depth_log = depth_log
 
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
@@ -221,6 +229,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         self.auxliary_loss = auxliary_loss
         self.detection_2d = detection_2d
         self.virtual_depth = virtual_depth
+        self.fetch_depth = fetch_depth
 
         self.use_sigmoid_cls = loss_cls.get('use_sigmoid', False)
         if not self.use_sigmoid_cls:
@@ -233,8 +242,11 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         fusion_heads = dict(center=(2, 2, reg_bn), height=(1, 2, reg_bn), dim=(3, 2, reg_bn), rot=(2, 2, reg_bn), vel=(2, 2, reg_bn), heatmap=(self.num_classes, 2))
         if fuse_cat:
             fusion_prediction_heads = FFN(hidden_channel*2, fusion_heads, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
+            # fusion_prediction_heads = FFNLN(hidden_channel*2, fusion_heads, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
+
         else:
             fusion_prediction_heads = FFN(hidden_channel, fusion_heads, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
+            # fusion_prediction_heads = FFNLN(hidden_channel, fusion_heads, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
 
         heads2d = dict(center_2d=(2, img_reg_layer, img_reg_bn), depth_2d=(1, img_reg_layer, img_reg_bn), cls=(self.num_classes, 2),
                     dim_2d=(3, img_reg_layer, img_reg_bn), rot_2d=(2, img_reg_layer, img_reg_bn), vel_2d=(2, img_reg_layer, img_reg_bn)
@@ -243,7 +255,8 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
             heads2d['depth_2d'] = (2, img_reg_layer, img_reg_bn)
         if detection_2d:
             heads2d.update(dict(center_img=(2, img_reg_layer, img_reg_bn), dim_img=(2, img_reg_layer, img_reg_bn)))
-        img_prediction_heads = FFN(hidden_channel, heads2d, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
+        # img_prediction_heads = FFN(hidden_channel, heads2d, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
+        img_prediction_heads = FFNLN(hidden_channel, heads2d, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
 
         if with_pts:
             pts_query_pos_embed = [PositionEmbeddingLearned(2, hidden_channel) for _ in range(num_pts_decoder_layers)]
@@ -255,24 +268,28 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
             )
         if with_img:
             assert learnable_query_pos or with_pts
-            # img_query_pos_embed = [PositionEmbeddingLearnedwoNorm(2, hidden_channel) for _ in range(num_img_decoder_layers)]
-            # img_key_pos_embed = [PositionEmbeddingLearnedwoNorm(2, hidden_channel) for _ in range(num_img_decoder_layers)]
-            img_query_pos_embed = [PositionEmbeddingLearned(2, hidden_channel) for _ in range(num_img_decoder_layers)]
-            img_key_pos_embed = [PositionEmbeddingLearned(2, hidden_channel) for _ in range(num_img_decoder_layers)]
+            if self.fetch_depth:
+                img_query_pos_embed = [PositionEmbeddingLearnedwoNorm(3, hidden_channel) for _ in range(num_img_decoder_layers)]
+            else:
+                img_query_pos_embed = [PositionEmbeddingLearnedwoNorm(2, hidden_channel) for _ in range(num_img_decoder_layers)]
+            img_key_pos_embed = [PositionEmbeddingLearnedwoNorm(2, hidden_channel) for _ in range(num_img_decoder_layers)]
+            # img_query_pos_embed = [PositionEmbeddingLearned(2, hidden_channel) for _ in range(num_img_decoder_layers)]
+            # img_key_pos_embed = [PositionEmbeddingLearned(2, hidden_channel) for _ in range(num_img_decoder_layers)]
 
             self.img_transformer = ImageTransformer_Cam_3D_MS(
                 hidden_channel=hidden_channel, num_heads=num_heads, num_decoder_layers=num_img_decoder_layers, out_size_factor_img=out_size_factor_img,
                 num_views=num_views, prediction_heads=img_prediction_heads, ffn_channel=ffn_channel, dropout=dropout, activation=activation, test_cfg=test_cfg,
                 query_pos=img_query_pos_embed, key_pos=img_key_pos_embed, use_camera=use_camera, bbox_pos=bbox_pos, allocentric=allocentric,
-                virtual_depth=virtual_depth
+                virtual_depth=virtual_depth, depth_log=depth_log, fetch_depth=fetch_depth
             )
 
             if view_transform:
                 heads_view = dict(center_view=(2, 2, reg_bn), height_view=(1, 2, reg_bn), dim_view=(3, 2, reg_bn), rot_view=(2, 2, reg_bn),
                                   vel_view=(2, 2, reg_bn), heatmap_view=(self.num_classes, 2))
                 view_prediction_heads = FFN(hidden_channel, heads_view, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
+                # view_prediction_heads = FFNLN(hidden_channel, heads_view, conv_cfg=conv_cfg, norm_cfg=norm_cfg, bias=bias)
 
-                if self.bbox_pos:
+                if self.bbox_pos:  
                     # view_query_pos_embed = PositionEmbeddingLearned(16, hidden_channel)
                     # view_key_pos_embed = PositionEmbeddingLearned(16, hidden_channel)
 
@@ -282,12 +299,14 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     elif self.view_transform_FFN:
                         view_query_pos_embed = PositionEmbeddingLearned(9, hidden_channel)
                     else:
-                        if self.virtual_depth:
-                            view_query_pos_embed = PositionEmbeddingLearnedwoNorm(12, hidden_channel)
-                            view_key_pos_embed = PositionEmbeddingLearnedwoNorm(12, hidden_channel)
-                        else:
-                            view_query_pos_embed = PositionEmbeddingLearnedwoNorm(9, hidden_channel)
-                            view_key_pos_embed = PositionEmbeddingLearnedwoNorm(9, hidden_channel)
+                        view_query_pos_embed = PositionEmbeddingLearnedwoNorm(9, hidden_channel)
+                        view_key_pos_embed = PositionEmbeddingLearnedwoNorm(9, hidden_channel)
+                        # if self.virtual_depth:
+                        #     view_query_pos_embed = PositionEmbeddingLearnedwoNorm(12, hidden_channel)
+                        #     view_key_pos_embed = PositionEmbeddingLearnedwoNorm(12, hidden_channel)
+                        # else:
+                        #     view_query_pos_embed = PositionEmbeddingLearnedwoNorm(9, hidden_channel)
+                        #     view_key_pos_embed = PositionEmbeddingLearnedwoNorm(9, hidden_channel)
                         # view_query_pos_embed = PositionEmbeddingLearned(9, hidden_channel)
                         # view_key_pos_embed = PositionEmbeddingLearned(9, hidden_channel)
                 else:
@@ -385,6 +404,14 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 raise NotImplementedError
 
             if fuse_self:
+                # self.fusion_transformer = FusionTransformer2D_3D_MLP(
+                #     hidden_channel=hidden_channel, num_heads=num_heads, num_decoder_layers=num_fusion_decoder_layers,
+                #     prediction_heads=fusion_prediction_heads, ffn_channel=ffn_channel, dropout=dropout,
+                #     activation=activation, test_cfg=test_cfg, query_pos=fusion_query_pos_embed, key_pos=fusion_query_pos_embed,
+                #     pts_projection=fuse_pts_projection, img_projection=fuse_img_projection, fusion_cwa=fusion_cwa,
+                #     num_proposals=num_proposals, lidar_query_only=lidar_query_only, fuse_cat=fuse_cat
+                # )
+
                 self.fusion_transformer = FusionTransformer2D_3D_Self(
                     hidden_channel=hidden_channel, num_heads=num_heads, num_decoder_layers=num_fusion_decoder_layers,
                     prediction_heads=fusion_prediction_heads, ffn_channel=ffn_channel, dropout=dropout,
@@ -415,11 +442,20 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     pts_projection=fuse_pts_projection, img_projection=fuse_img_projection, fusion_gate=fusion_gate,
                     fuse_cat=fuse_cat
                 )
+
+                # self.fusion_transformer = FusionTransformer2D_3D_InvCross(
+                #     hidden_channel=hidden_channel, num_heads=num_heads, num_decoder_layers=num_fusion_decoder_layers,
+                #     prediction_heads=fusion_prediction_heads,  ffn_channel=ffn_channel, dropout=dropout,
+                #     activation=activation, test_cfg=test_cfg, query_pos=fusion_query_pos_embed, key_pos=fusion_key_pos_embed,
+                #     pts_projection=fuse_pts_projection, img_projection=fuse_img_projection
+                # )
+ 
                 # self.fusion_transformer = FusionIPOT(
                 #     hidden_channel=hidden_channel, prediction_heads=fusion_prediction_heads,  ffn_channel=ffn_channel, dropout=dropout,
                 #     activation=activation, test_cfg=test_cfg, query_pos=fusion_query_pos_embed, key_pos=fusion_key_pos_embed,
                 #     pts_projection=fuse_pts_projection, img_projection=fuse_img_projection
                 # )
+
 
             if self.initialize_by_heatmap and self.cross_heatmap:
                 # self.heatmap_pts_proj = ConvModule(
@@ -459,6 +495,18 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                         hidden_channel, num_heads, dim_feedforward=ffn_channel, dropout=dropout, activation=activation,
                         self_posembed=colattn_query_pos, cross_posembed=colattn_key_pos, cross_only=False
                     )
+                elif self.cross_type == 'transfusion':
+                    self.col_decoders = nn.ModuleList()
+                    self.fc = nn.Sequential(*[nn.Conv1d(hidden_channel, hidden_channel, kernel_size=1)])
+
+                    for view_idx in range(num_views):
+                        colattn_query_pos = PositionEmbeddingLearned(2, hidden_channel)
+                        colattn_key_pos = PositionEmbeddingLearned(1, hidden_channel)
+                        decoder = TransformerDecoderLayer(
+                            hidden_channel, num_heads, dim_feedforward=ffn_channel, dropout=dropout, activation=activation,
+                            self_posembed=colattn_query_pos, cross_posembed=colattn_key_pos, cross_only=True
+                        )
+                        self.col_decoders.append(decoder)
                 else:
                     colattn_query_pos = PositionEmbeddingLearnedLN(1, hidden_channel)
                     colattn_key_pos = PositionEmbeddingLearnedLN(3, hidden_channel)
@@ -470,26 +518,32 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     )
 
                 if self.cat_point:
-                    if cross_heatmap_LN:
-                        self.reduce_conv = ConvLN(
-                            hidden_channel*2+1, hidden_channel, kernel_size=1, padding=0
-                        )
+                    if self.fuse_bev_feature:
+                        self.reduce_conv = nn.Conv2d(hidden_channel*2+1, hidden_channel, kernel_size=1, padding=0)
                     else:
-                        self.reduce_conv = ConvModule(
-                            hidden_channel*2+1, hidden_channel, kernel_size=1, bias=bias, padding=0,
-                            conv_cfg=dict(type='Conv2d'), norm_cfg=dict(type='BN2d'),
-                        )
-                    # self.se_block = SE_Block(hidden_channel)
+                        if cross_heatmap_LN:
+                            self.reduce_conv = ConvLN(
+                                hidden_channel*2+1, hidden_channel, kernel_size=1, padding=0
+                            )
+                        else:
+                            self.reduce_conv = ConvModule(
+                                hidden_channel*2+1, hidden_channel, kernel_size=1, bias=bias, padding=0,
+                                conv_cfg=dict(type='Conv2d'), norm_cfg=dict(type='BN2d'),
+                            )
+                        # self.se_block = SE_Block(hidden_channel)
                 else:
-                    if cross_heatmap_LN:
-                        self.reduce_conv = ConvLN(
-                            hidden_channel+1, hidden_channel, kernel_size=3, padding=1
-                        )
+                    if self.fuse_bev_feature:
+                        self.reduce_conv = nn.Conv2d(hidden_channel+1, hidden_channel, kernel_size=3, padding=1)
                     else:
-                        self.reduce_conv = ConvModule(
-                            hidden_channel+1, hidden_channel, kernel_size=3, bias=bias, padding=1,
-                            conv_cfg=dict(type='Conv2d'), norm_cfg=dict(type='BN2d'),
-                        )
+                        if cross_heatmap_LN:
+                            self.reduce_conv = ConvLN(
+                                hidden_channel+1, hidden_channel, kernel_size=3, padding=1
+                            )
+                        else:
+                            self.reduce_conv = ConvModule(
+                                hidden_channel+1, hidden_channel, kernel_size=3, bias=bias, padding=1,
+                                conv_cfg=dict(type='Conv2d'), norm_cfg=dict(type='BN2d'),
+                            )
 
         # a shared convolution
         if self.with_pts:
@@ -522,7 +576,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     #     bias=bias,
                     # )
                     self.shared_conv_img = nn.Identity()
-                    blocks = [1, 1, 1, 1]
+                    blocks = [1] * self.level_num
                     assert len(blocks) == self.level_num
                     if self.depth_for_proposal:
                         self.depth_resnet = DepthEncoderResNet(depth_input_channel, in_channels_img, hidden_channel, depth_layers=blocks)
@@ -555,16 +609,16 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         if self.initialize_by_heatmap:
             self.heatmap_head = self.build_heatmap(hidden_channel, bias, num_classes)
             if img_heatmap_LN:
-                # self.img_heatmap_head = nn.ModuleList()
-                # for lvl in range(self.level_num):
-                #     self.img_heatmap_head.append(self.build_heatmap_LN(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer))
+                self.img_heatmap_head = nn.ModuleList()
+                for lvl in range(self.level_num):
+                    self.img_heatmap_head.append(self.build_heatmap_LN(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer))
 
-                self.img_heatmap_head = self.build_heatmap_LN(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer)
+                # self.img_heatmap_head = self.build_heatmap_LN(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer)
             else:
-                self.img_heatmap_head = self.build_heatmap(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer, dcn=img_heatmap_dcn)
-                # self.img_heatmap_head = nn.ModuleList()
-                # for lvl in range(self.level_num):
-                #     self.img_heatmap_head.append(self.build_heatmap(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer, dcn=img_heatmap_dcn))
+                # self.img_heatmap_head = self.build_heatmap(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer, dcn=img_heatmap_dcn)
+                self.img_heatmap_head = nn.ModuleList()
+                for lvl in range(self.level_num):
+                    self.img_heatmap_head.append(self.build_heatmap(hidden_channel, bias, num_classes, layer_num=img_heatmap_layer, dcn=img_heatmap_dcn))
 
             self.class_encoding = nn.Conv1d(num_classes, hidden_channel, 1)
             self.img_class_encoding = nn.Conv1d(num_classes, hidden_channel, 1)
@@ -664,6 +718,12 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         else:
             batch_size = img_inputs.shape[0] // self.num_views
 
+        if self.fetch_depth and sparse_depth is not None:
+            dense_depth = sparse_depth[:, :, 0, 2]
+            sparse_depth = sparse_depth[:, :, 0, :2]
+        else:
+            sparse_depth = sparse_depth[:, :, 0, :2]
+
         if self.encode_depth:
             # sparse_depth = sparse_depth.view(batch_size*self.num_views, self.level_num, 2, sparse_depth.shape[-2], sparse_depth.shape[-1])
             sparse_depth = sparse_depth.view(batch_size*self.num_views, 1, -1, sparse_depth.shape[-2], sparse_depth.shape[-1])
@@ -672,7 +732,6 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     img_inputs = self.depth_resnet(sparse_depth[:, 0], img_inputs)
                 else:
                     img_inputs, img_inputs_wodepth = self.depth_resnet(sparse_depth[:, 0], img_inputs)
-
 
         img_feats = []
         if self.with_img:
@@ -692,9 +751,8 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     img_feat = self.shared_conv_img(img_inputs_level)
                 # img_feat = img_feat + self.level_pos[i].reshape(1, self.level_pos[i].shape[0], 1, 1)
                 img_feats.append(img_feat)
-
-            # input_padding_mask = self.construct_input_padding_mask(img_feats, img_metas)
-            input_padding_mask = None
+            input_padding_mask = self.construct_input_padding_mask(img_feats, img_metas)
+            # input_padding_mask = None
 
             img_feats_pos = []
             normal_img_feats_pos = []
@@ -739,6 +797,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
 
                 if self.fuse_bev_feature:
                     assert fuse_lidar_feat_flatten is not None
+                    fuse_lidar_feat_flatten = fuse_lidar_feat_flatten + lidar_feat_flatten
                     pts_query_feat = fuse_lidar_feat_flatten.gather(
                         index=pts_top_proposals_index[:, None, :].expand(-1, lidar_feat_flatten.shape[1], -1), dim=-1
                     )  # [BS, C, num_proposals]
@@ -791,10 +850,32 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 normal_img_query_pos = normal_img_feats_pos_repeat.gather(
                     index=img_top_proposals_pos_id[:, None, :].permute(0, 2, 1).expand(-1, -1, normal_img_feats_pos_stack.shape[-1]), dim=1
                 )  # [BS, num_proposals, 2]
+
                 img_query_feat = img_feat_stack.gather(
                     index=img_top_proposals_index[:, None, :].expand(-1, img_feat_stack.shape[1], -1), dim=-1
                 )  # [BS, C, num_proposals]
                 img_query_view = img_top_proposals_view_idx.clone()  #  [BS, num_proposals]
+
+                if self.fetch_depth:
+                    depth_width = dense_depth.shape[-1]
+                    depth_height = dense_depth.shape[-2]
+                    dense_depth_stack = []
+                    for lvl_id in range(self.level_num):
+                        if lvl_id != 0:
+                            dense_depth_lvl = F.interpolate(dense_depth_lvl, (depth_height//2**lvl_id, depth_width//2**lvl_id), mode="nearest")
+                        else:
+                            dense_depth_lvl = dense_depth
+                        dense_depth_stack.append(dense_depth_lvl.reshape(batch_size, self.num_views, -1))
+                    dense_depth_stack = torch.cat(dense_depth_stack, dim=-1)
+                    dense_depth_stack = dense_depth_stack.reshape(batch_size, 1, -1)
+
+                    img_query_depth = dense_depth_stack.gather(
+                        index=img_top_proposals_index[:, None, :], dim=-1
+                    ).permute(0, 2, 1)
+
+                    img_query_depth = img_query_depth / 10
+
+                    normal_img_query_pos = torch.cat([normal_img_query_pos, img_query_depth], dim=-1)
 
                 one_hot = F.one_hot(img_top_proposals_class, num_classes=self.num_classes).permute(0, 2, 1)  # [BS, num_classes, num_proposals]
                 self.img_query_label = img_top_proposals_class
@@ -838,8 +919,10 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 for lvl in range(self.level_num):
                     img_feats[lvl] = img_feats[lvl] + self.level_pos_img[lvl].reshape(1, self.level_pos_img[lvl].shape[0], 1, 1)
 
+            # img_query_feat, normal_img_query_pos, img_query_pos_bev, camera_info, img_ret_dicts = \
+            #     self.img_transformer(img_query_feat, normal_img_query_pos, img_query_view, img_feats, normal_img_feats_pos_stack, view_proj_matrix['lidar2cam_rt'], view_proj_matrix['cam_intrinsic'], img_metas, input_padding_mask)
             img_query_feat, normal_img_query_pos, img_query_pos_bev, camera_info, img_ret_dicts = \
-                self.img_transformer(img_query_feat, normal_img_query_pos, img_query_view, img_feats, normal_img_feats_pos_stack, view_proj_matrix['lidar2cam_rt'], view_proj_matrix['cam_intrinsic'], img_metas, input_padding_mask)
+                self.img_transformer(img_query_feat, normal_img_query_pos, img_query_view, img_feats, normal_img_feats_pos_stack, img_metas)
 
             # torch.save(normal_img_query_pos, "vis/img_query_pos.pt")
             # torch.save(img_query_view, "vis/img_query_view_3d.pt")
@@ -852,7 +935,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 elif self.view_bbox_add:
                     img_query_feat, view_ret_dicts = self.view_adder(img_query_feat, img_query_pos_bev)
                 else:
-                    img_query_feat, img_query_pos_bev, view_ret_dicts = self.view_transformer(img_query_feat, img_query_pos_bev, normal_img_query_pos, img_ret_dicts, camera_info)
+                    img_query_feat, img_query_pos_bev, view_ret_dicts = self.view_transformer(img_query_feat, img_query_pos_bev, normal_img_query_pos[..., :2], img_ret_dicts, camera_info)
 
                 # torch.save(img_query_pos_bev, 'vis/img_vt_query_pos_bev.pt')
 
@@ -867,7 +950,23 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                     pts_query_feat = pts_query_feat[:, :, ids]
                     pts_query_pos = pts_query_pos[:, ids, :]
 
+
+            # all_query_feat, all_query_pos, fusion_ret_dicts, attn_weights = self.fusion_transformer(pts_query_feat, pts_query_pos, img_query_feat, img_query_pos_bev, need_weights=True)
             all_query_feat, all_query_pos, fusion_ret_dicts = self.fusion_transformer(pts_query_feat, pts_query_pos, img_query_feat, img_query_pos_bev)
+            # all_query_feat, all_query_pos, fusion_ret_dicts = self.fusion_transformer(pts_query_feat, pts_query_pos, img_query_feat, img_query_pos_bev, pts_ret_dicts[0]['heatmap'], img_ret_dicts[0]['cls'])
+
+            # global sample_index
+            # if sample_index % 20 == 0:
+            #     os.makedirs("paper_code/show_dir/sample_%d"%sample_index, exist_ok=True)
+            #     torch.save(attn_weights, 'paper_code/show_dir/sample_%d/attn_weights.pth'%sample_index)
+            #     with open("paper_code/show_dir/sample_%d/point_ret_dicts.pkl"%sample_index, "wb") as file:
+            #         pickle.dump(ret_dicts, file)
+            #     with open("paper_code/show_dir/sample_%d/fusion_ret_dicts.pkl"%sample_index, "wb") as file:
+            #         pickle.dump(fusion_ret_dicts, file)
+            #     with open("paper_code/show_dir/sample_%d/view_ret_dicts.pkl"%sample_index, "wb") as file:
+            #         pickle.dump(view_ret_dicts, file)
+            #
+            # sample_index += 1
 
             if not self.auxliary_loss:
                 fusion_ret_dicts = fusion_ret_dicts[-1:]
@@ -1235,8 +1334,8 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         heatmap_output = self.cross_heatmap_head(lidar_feat_output.contiguous())
 
         return heatmap_output, lidar_feat_output.reshape(batch_size, self.hidden_channel, H*W)
-
-    # def generate_heatmap_deform(self, lidar_feat, img_feat, voxel_height, img_metas, lidar2img_rt):
+    #
+    # def generate_heatmap_deform(self, lidar_feat, img_feat, voxel_height, img_metas, lidar2img_rt, input_padding_mask=None):
     #     # img_feat [bs*num_view, C, img_h, img_w]
     #     # lidar_feat [BS, C, H, W]
     #
@@ -1391,6 +1490,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
 
 
     def generate_heatmap_deform(self, lidar_feat, img_feat, voxel_height, img_metas, lidar2img_rt, input_padding_mask):
+
         # img_feat [bs*num_view, C, img_h, img_w]
         # lidar_feat [BS, C, H, W]
 
@@ -1414,7 +1514,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
             spatial_shapes.append([img_h_lvl, img_w_lvl])
 
         level_start_index = level_start_index[:-1]
-        level_start_index = torch.LongTensor(level_start_index).to(lidar_feat.device)
+        level_start_index = torch.LongTensor(level_start_index).to(lidar_feat.device) 
         spatial_shapes = torch.LongTensor(spatial_shapes).to(lidar_feat.device)
         img_feats_stack = torch.cat(img_feats_flatten, dim=3)  # [bs, num_view, C, h*w (sum)]
         normal_img_feats_pos_stack = self.normal_img_feats_pos_stack  # [1, h*w (sum), 2]
@@ -1462,8 +1562,8 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
 
                 depth = pts_2d_view[on_the_image, 2]
                 if self.virtual_depth:
-                    if 'pcd_scale_factor' in img_metas[sample_idx]:
-                        depth = depth / img_metas[sample_idx]['pcd_scale_factor']
+                    # if 'pcd_scale_factor' in img_metas[sample_idx]:
+                    #     depth = depth / img_metas[sample_idx]['pcd_scale_factor']
                     if 'img_scale_ratios' in img_metas[sample_idx]:
                         depth = depth / img_metas[sample_idx]['img_scale_ratios'][view_idx]
                 depth = torch.log(depth)
@@ -1502,9 +1602,10 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                         lidar_feat_view[None], img_feats_stack[sample_idx:sample_idx + 1, view_idx],
                         lidar_feat_pos_view[None], normal_img_feats_pos_stack,
                         reference_points=reference_points[None],
-                        level_start_index=level_start_index, spatial_shapes=spatial_shapes,
+                        level_start_index=level_start_index, spatial_shapes=spatial_shapes
                     )  # [1, C, N]
                 else:
+
                     output = self.col_decoder(
                         lidar_feat_view[None], img_feats_stack[sample_idx:sample_idx + 1, view_idx],
                         lidar_feat_pos_view[None], normal_img_feats_pos_stack,
@@ -1512,6 +1613,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                         level_start_index=level_start_index, spatial_shapes=spatial_shapes,
                         input_padding_mask=input_padding_mask[sample_idx:sample_idx+1, view_idx]
                     )  # [1, C, N]
+
 
                 overlap_mask = lidar_feat_count[sample_idx, 0, on_the_image] > 0
                 nonoverlap_mask = torch.logical_not(overlap_mask)
@@ -1541,10 +1643,43 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
             lidar_feat_output = lidar_feat_output + (1 - lidar_feat_flag) * lidar_feat
             lidar_feat_output = torch.cat([lidar_feat_output, lidar_feat_flag], dim=1)
             lidar_feat_output = self.reduce_conv(lidar_feat_output)
-
         heatmap_output = self.cross_heatmap_head(lidar_feat_output.contiguous())
 
         return heatmap_output, lidar_feat_output.reshape(batch_size, self.hidden_channel, H*W)
+
+    def generate_heatmap_transfusion(self, lidar_feat, img_feat):
+        batch_size = lidar_feat.shape[0]
+        H, W = lidar_feat.shape[-2], lidar_feat.shape[-1]
+        lidar_feat_flatten = lidar_feat.reshape(batch_size, self.hidden_channel, H*W)  # [bs, C, H*W]
+
+        img_feats_collapse = []
+        img_pos_collapse = []
+        for lvl in range(1):
+            img_feat_lvl = img_feat[lvl]
+            img_h_lvl, img_w_lvl = img_feat_lvl.shape[-2], img_feat_lvl.shape[-1]
+            img_feat_lvl = img_feat_lvl.reshape(batch_size, self.num_views, self.hidden_channel, img_h_lvl, img_w_lvl)  # [bs, num_views, C, H, W]
+            img_feat_lvl_collapse = torch.max(img_feat_lvl, dim=3)[0]  # [bs, num_views, C, W]
+            img_feats_collapse.append(img_feat_lvl_collapse)
+            img_pos_lvl_collapse = torch.arange(img_w_lvl).type_as(img_feat_lvl_collapse)
+            img_pos_collapse.append(img_pos_lvl_collapse)
+        img_feats_collapse = torch.cat(img_feats_collapse, dim=-1)
+        img_pos_collapse = torch.cat(img_pos_collapse, dim=0)
+        img_feats_collapse = img_feats_collapse.reshape(batch_size*self.num_views, self.hidden_channel, -1)
+        img_feats_collapse = self.fc(img_feats_collapse)
+        img_feats_collapse = img_feats_collapse.reshape(batch_size, self.num_views, self.hidden_channel, -1)
+
+        bev_pos = self.bev_pos.repeat(batch_size, 1, 1).to(lidar_feat.device)  # [BS, H*W, 2]
+
+        for view_idx in range(self.num_views):
+            img_feats_collapse_view = img_feats_collapse[:, view_idx]  # [bs, C, W]
+            img_pos_collapse_view = img_pos_collapse[None, :, None].repeat(batch_size, 1, 1)  # [bs, W, 1]
+            lidar_feat_flatten = self.col_decoders[view_idx](lidar_feat_flatten, img_feats_collapse_view, bev_pos, img_pos_collapse_view)  # [bs, C, H*W]
+
+        lidar_feat_ouput = lidar_feat_flatten.reshape(batch_size, self.hidden_channel, H, W)
+
+        heatmap_output = self.cross_heatmap_head(lidar_feat_ouput.contiguous())
+
+        return heatmap_output, lidar_feat_ouput.reshape(batch_size, self.hidden_channel, H * W)
 
     def generate_heatmap(self, lidar_feat, min_voxel_height, max_voxel_height, batch_size, img_metas, lidar2img_rt, img_feat=None, input_padding_mask=None):
         dense_heatmap = self.heatmap_head(lidar_feat)  # [BS, num_class, H, W]
@@ -1555,6 +1690,8 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
             if self.cross_type == 'deform_height':
                 voxel_height = (min_voxel_height + max_voxel_height) / 2
                 dense_heatmap_cross, fuse_lidar_feature_flatten = self.generate_heatmap_deform(lidar_feat, img_feat, voxel_height, img_metas, lidar2img_rt, input_padding_mask)
+            elif self.cross_type == 'transfusion':
+                dense_heatmap_cross, fuse_lidar_feature_flatten = self.generate_heatmap_transfusion(lidar_feat, img_feat)
             else:
                 dense_heatmap_cross, fuse_lidar_feature_flatten = self.generate_heatmap_range(lidar_feat, img_feat, min_voxel_height, max_voxel_height, img_metas)
 
@@ -1591,8 +1728,8 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
         img_heatmaps = []
         for lvl in range(self.level_num):
 
-            img_dense_heatmap = self.img_heatmap_head(img_feats[lvl])  # [BS*num_view, num_class, h, w]
-            # img_dense_heatmap = self.img_heatmap_head[lvl](img_feats[lvl])  # [BS*num_view, num_class, h, w]
+            # img_dense_heatmap = self.img_heatmap_head(img_feats[lvl])  # [BS*num_view, num_class, h, w]
+            img_dense_heatmap = self.img_heatmap_head[lvl](img_feats[lvl])  # [BS*num_view, num_class, h, w]
 
             img_heatmap = img_dense_heatmap.detach().sigmoid()  # [BS*num_view, num_class, h, w]
             padding = self.img_nms_kernel_size // 2
@@ -1873,8 +2010,10 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
             center_weights[pos_inds] = 1.0
 
             depth = gt_centers_2d[sampling_result.pos_assigned_gt_inds, 2]
-            # depth_labels[pos_inds] = torch.log(depth + 1e-5)
-            depth_labels[pos_inds] = depth
+            if self.depth_log:
+                depth_labels[pos_inds] = torch.log(depth + 1e-5)
+            else:
+                depth_labels[pos_inds] = depth
             depth_weights[pos_inds] = 1
 
             view_mask_ignore = view_targets != view
@@ -1959,6 +2098,24 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                             lvl = 3
                             center = center / 8
                             radius = radius / 8
+                    elif self.level_num == 3:
+                        if max_l < 48:
+                            lvl = 0
+                        elif max_l < 96:
+                            lvl = 1
+                            center = center / 2
+                            radius = radius / 2
+                        else:
+                            lvl = 2
+                            center = center / 4
+                            radius = radius / 4
+                    elif self.level_num == 2:
+                        if max_l < 96:
+                            lvl = 0
+                        else:
+                            lvl = 1
+                            center = center / 2
+                            radius = radius / 2
                     else:
                         assert self.level_num == 1
                         lvl = 0
@@ -2466,7 +2623,7 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 preds_2d = torch.cat([preds_2d_center, preds_2d_depth[:, :1], preds_2d_dim, preds_2d_rot, preds_2d_vel], dim=1).permute(0, 2, 1)  # [bs, num_proposal, 10]
                 layer_bbox_targets_2d = bbox_targets_2d[:, start:start + layer_num_proposals, :preds_2d.shape[2]]
                 layer_reg_weights_2d = bbox_weights_2d[:, start:start + layer_num_proposals, :preds_2d.shape[2]]
-                code_weights = self.train_cfg.get('code_weights', None)
+                code_weights = self.train_cfg.get('img_code_weights', None)
                 layer_reg_weights_2d = layer_reg_weights_2d * layer_reg_weights_2d.new_tensor(code_weights)
 
                 if self.detection_2d:
@@ -2583,15 +2740,24 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 img_query_label_decoder = torch.max(preds_dict[0]['cls'], dim=1)[1]
                 img_query_label_view = torch.max(preds_dict[0]['heatmap_view'], dim=1)[1]
                 one_hot_img_decoder = F.one_hot(img_query_label_decoder, num_classes=self.num_classes).permute(0, 2, 1)
-                one_hot_img_view = F.one_hot(img_query_label_view, num_classes=self.num_classes).permute(0, 2, 1)
-                img_query_heatmap_score = preds_dict[0]['img_query_heatmap_score'] * one_hot_img
-                # img_query_heatmap_score = preds_dict[0]['img_query_heatmap_score'] * one_hot_img * one_hot_img_decoder * 0.5
+                # img_query_heatmap_score = preds_dict[0]['img_query_heatmap_score'] * one_hot_img
+                img_query_heatmap_score = preds_dict[0]['img_query_heatmap_score'] * one_hot_img * one_hot_img_decoder * 0.5
+
+                # one_hot_img_view = F.one_hot(img_query_label_view, num_classes=self.num_classes).permute(0, 2, 1)
+                # img_query_heatmap_score = preds_dict[0]['img_query_heatmap_score'] * one_hot_img * one_hot_img_view * 0.5
+
+                # fusion_label = torch.max(preds_dict[0]['heatmap'][..., -layer_num_proposal:], dim=1)[1]
+                # fusion_one_hot = F.one_hot(fusion_label, num_classes=self.num_classes).permute(0, 2, 1)
+
                 query_heatmap_score = torch.cat([query_heatmap_score, img_query_heatmap_score], dim=2)
                 one_hot = torch.cat([one_hot, one_hot_img], dim=2)
-                fusion_label = torch.max(preds_dict[0]['heatmap'][..., -layer_num_proposal:], dim=1)[1]
+
             else:
                 one_hot = F.one_hot(self.query_labels, num_classes=self.num_classes).permute(0, 2, 1)
                 query_heatmap_score = preds_dict[0]['query_heatmap_score'] * one_hot
+                one_hot_img = F.one_hot(self.img_query_label, num_classes=self.num_classes).permute(0, 2, 1)
+                img_query_heatmap_score = preds_dict[0]['img_query_heatmap_score'] * one_hot_img
+
 
             batch_score = batch_score_raw * query_heatmap_score
             # batch_score = batch_score_raw * img_query_heatmap_score
@@ -2622,24 +2788,25 @@ class ImplicitHead2D_Cam_MS_Deform(nn.Module):
                 #     dict(num_class=1, class_names=['traffic_cone'], indices=[9], radius=0.175),
                 # ]
 
-                # self.tasks = [
-                #     dict(num_class=1, class_names=['car'], indices=[0], radius=0.35),
-                #     dict(num_class=1, class_names=['truck'], indices=[1], radius=0.35),
-                #     dict(num_class=1, class_names=['construction_vehicle'], indices=[2], radius=0.35),
-                #     dict(num_class=1, class_names=['bus'], indices=[3], radius=0.35),
-                #     dict(num_class=1, class_names=['trailer'], indices=[4], radius=0.35),
-                #     dict(num_class=1, class_names=['barrier'], indices=[5], radius=0.175),
-                #     dict(num_class=1, class_names=['motorcycle'], indices=[6], radius=0.1),
-                #     dict(num_class=1, class_names=['bicycle'], indices=[7], radius=-1),
-                #
-                #     dict(num_class=1, class_names=['pedestrian'], indices=[8], radius=0.1),
-                #     dict(num_class=1, class_names=['traffic_cone'], indices=[9], radius=0.1),
-                # ]
                 self.tasks = [
-                    dict(num_class=8, class_names=[], indices=[0, 1, 2, 3, 4, 5, 6, 7], radius=-1),
-                    dict(num_class=1, class_names=['pedestrian'], indices=[8], radius=0.175),
-                    dict(num_class=1, class_names=['traffic_cone'], indices=[9], radius=0.175),
+                    dict(num_class=1, class_names=['car'], indices=[0], radius=0.35),
+                    dict(num_class=1, class_names=['truck'], indices=[1], radius=0.35),
+                    dict(num_class=1, class_names=['construction_vehicle'], indices=[2], radius=0.35),
+                    dict(num_class=1, class_names=['bus'], indices=[3], radius=0.35),
+                    dict(num_class=1, class_names=['trailer'], indices=[4], radius=0.35),
+                    dict(num_class=1, class_names=['barrier'], indices=[5], radius=0.175),
+                    dict(num_class=1, class_names=['motorcycle'], indices=[6], radius=0.1),
+                    dict(num_class=1, class_names=['bicycle'], indices=[7], radius=-1),
+
+                    dict(num_class=1, class_names=['pedestrian'], indices=[8], radius=0.1),
+                    dict(num_class=1, class_names=['traffic_cone'], indices=[9], radius=0.1),
                 ]
+
+                # self.tasks = [
+                #     dict(num_class=8, class_names=[], indices=[0, 1, 2, 3, 4, 5, 6, 7], radius=-1),
+                #     dict(num_class=1, class_names=['pedestrian'], indices=[8], radius=0.175),
+                #     dict(num_class=1, class_names=['traffic_cone'], indices=[9], radius=0.175),
+                # ]
             elif self.test_cfg['dataset'] == 'Waymo':
                 self.tasks = [
                     dict(num_class=1, class_names=['Car'], indices=[0], radius=0.7),

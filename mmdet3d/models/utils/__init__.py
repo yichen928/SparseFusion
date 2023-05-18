@@ -14,7 +14,8 @@ from .implicit_transformer_2D3D_ego import ImageTransformer2D_3D_ego, PointTrans
 from .implicit_transformer_3Donly import PointTransformer3Donly, FusionTransformer3Donly, ImageTransformer3Donly
 from .implicit_transformer_2D3D_cross import ImageTransformer2D_3D_Cross, DepthTransformer2D_3D, FusionTransformer2D_3D_Cross, \
     ImageTransformer2D_3D_Cross_Proj, FusionTransformer2D_3D_Self, ImageTransformer2D_3D_MS, DepthEstimation, FusionTransformer2D_3D_DoubleCross, \
-    FusionTransformer2D_3D_SepPos_Self, FusionIPOT
+    FusionTransformer2D_3D_SepPos_Self, FusionIPOT, FusionTransformer2D_3D_InvCross, FusionTransformer2D_3D_MLP
+
 from .implicit_transformer_3D_cam import ImageTransformer_Cam_3D_MS, ViewTransformer, ViewTransformerPoint, ViewTransformerFFN, ViewAdder
 from .msca import MSCABlock, MSFusion
 from .drop import Dropout, DropPath, build_dropout
@@ -42,5 +43,6 @@ __all__ = ['clip_sigmoid', 'MLP', 'PositionEmbeddingLearned', 'TransformerDecode
            'DepthEncoder', 'DepthEncoderLarge', 'DepthEncoderSmall', 'ViewTransformer', 'DepthEncoderResNet', 'ViewTransformerPoint',
            'ImageTransformer_Seq_MS', 'FusionTransformer_Seq', 'ImageTransformer_Seq_DETR_MS', 'ImageTransformer_Seq_PETR_MS',
            'DepthEncoderResNetSimple', 'ViewTransformerFFN', 'ViewAdder', 'FusionTransformer2D_3D_DoubleCross',
-           'FusionTransformer2D_3D_SepPos_Self', 'LayerNorm', 'ConvLN', 'SE_Block', 'FusionIPOT'
+           'FusionTransformer2D_3D_SepPos_Self', 'LayerNorm', 'ConvLN', 'SE_Block', 'FusionIPOT', 'FusionTransformer2D_3D_InvCross',
+           'FusionTransformer2D_3D_MLP'
 ]

@@ -33,6 +33,7 @@ class MultiScaleFlipAug3D(object):
                  transforms,
                  img_scale,
                  pts_scale_ratio,
+                 pts_rotation=0,
                  flip=False,
                  flip_direction='horizontal',
                  pcd_horizontal_flip=False,
@@ -43,8 +44,11 @@ class MultiScaleFlipAug3D(object):
         self.pts_scale_ratio = pts_scale_ratio \
             if isinstance(pts_scale_ratio, list) else[float(pts_scale_ratio)]
 
+        self.pts_rotation = pts_rotation if isinstance(pts_rotation, list) else[float(pts_rotation)]
+
         assert mmcv.is_list_of(self.img_scale, tuple)
         assert mmcv.is_list_of(self.pts_scale_ratio, float)
+        assert mmcv.is_list_of(self.pts_rotation, float)
 
         self.flip = flip
         self.pcd_horizontal_flip = pcd_horizontal_flip
@@ -84,24 +88,26 @@ class MultiScaleFlipAug3D(object):
             if self.flip and self.pcd_vertical_flip else [False]
         for scale in self.img_scale:
             for pts_scale_ratio in self.pts_scale_ratio:
-                for flip in flip_aug:
-                    for pcd_horizontal_flip in pcd_horizontal_flip_aug:
-                        for pcd_vertical_flip in pcd_vertical_flip_aug:
-                            for direction in self.flip_direction:
-                                # results.copy will cause bug
-                                # since it is shallow copy
-                                _results = deepcopy(results)
-                                _results['scale'] = scale
-                                _results['flip'] = flip
-                                _results['pcd_scale_factor'] = \
-                                    pts_scale_ratio
-                                _results['flip_direction'] = direction
-                                _results['pcd_horizontal_flip'] = \
-                                    pcd_horizontal_flip
-                                _results['pcd_vertical_flip'] = \
-                                    pcd_vertical_flip
-                                data = self.transforms(_results)
-                                aug_data.append(data)
+                for pts_rotation in self.pts_rotation:
+                    for flip in flip_aug:
+                        for pcd_horizontal_flip in pcd_horizontal_flip_aug:
+                            for pcd_vertical_flip in pcd_vertical_flip_aug:
+                                for direction in self.flip_direction:
+                                    # results.copy will cause bug
+                                    # since it is shallow copy
+                                    _results = deepcopy(results)
+                                    _results['scale'] = scale
+                                    _results['flip'] = flip
+                                    _results['pcd_scale_factor'] = \
+                                        pts_scale_ratio
+                                    _results['flip_direction'] = direction
+                                    _results['pcd_horizontal_flip'] = \
+                                        pcd_horizontal_flip
+                                    _results['pcd_vertical_flip'] = \
+                                        pcd_vertical_flip
+                                    _results['pcd_rotation_angle'] = pts_rotation
+                                    data = self.transforms(_results)
+                                    aug_data.append(data)
         # list of dict to dict of list
         aug_data_dict = {key: [] for key in aug_data[0]}
         for data in aug_data:

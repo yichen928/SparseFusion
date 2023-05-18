@@ -192,10 +192,6 @@ def main():
             if 'pts_bbox_head.class_encoding' in name:
                 param.requires_grad = False
 
-
-
-
-
             # if 'pts_bbox_head.prediction_heads.0' in name:
             #     param.requires_grad = False
             # if 'pts_bbox_head.decoder.0' in name:
@@ -220,9 +216,6 @@ def main():
         model.pts_bbox_head.shared_conv.apply(fix_bn)
         model.pts_bbox_head.class_encoding.apply(fix_bn)
         model.pts_bbox_head.point_transformer.apply(fix_bn)
-
-
-
 
         # model.pts_bbox_head.decoder[0].apply(fix_bn)
         # model.pts_bbox_head.prediction_heads[0].apply(fix_bn)
