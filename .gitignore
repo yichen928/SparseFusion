@@ -127,3 +127,5 @@ exps/
 /data/sunrgbd/OFFICIAL_SUNRGBD/
 *.obj
 *.ply
+
+sparsefusion_nuscenes_results/
