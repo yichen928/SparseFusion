@@ -16,7 +16,7 @@ We do not use any test-time augmentations or model ensembles to get these result
 
 | Image Backbone | Point Cloud Backbone | mAP | NDS | Link |
 | --------- | ------ | ------ | --------- | --------- |
-| ResNet50  | VoxelNet             | 70.4 | 72.8 | [config](configs/sparsefusion_nusc_voxel_LC_r50.py)/[ckpt](https://drive.google.com/file/d/1NZIrg7s-VwxkwuPHTTWSQQO7T7IILBGC/view?usp=share_link) |
+| ResNet50  | VoxelNet             | 70.5 | 72.8 | [config](configs/sparsefusion_nusc_voxel_LC_r50.py)/[ckpt](https://drive.google.com/file/d/1NZIrg7s-VwxkwuPHTTWSQQO7T7IILBGC/view?usp=share_link) |
 | Swin-T  | VoxelNet             | 71.0 | 73.1 | [config](configs/sparsefusion_nusc_voxel_LC_SwinT.py)/[ckpt](https://drive.google.com/file/d/1dAhOKtbLd1e3I5jwk_3E1gzbl61P24qy/view?usp=share_link) |
 
 #### Test Set
