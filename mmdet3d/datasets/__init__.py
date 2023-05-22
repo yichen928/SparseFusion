@@ -14,8 +14,7 @@ from .scannet_dataset import ScanNetDataset
 from .semantickitti_dataset import SemanticKITTIDataset
 from .sunrgbd_dataset import SUNRGBDDataset
 from .waymo_dataset import WaymoDataset
-from .nuscenes_dataset_w2D import NuScenesDataset_w2D
-from .nuscenes_dataset_wCam import NuScenesDataset_wCam
+from .nuscenes_dataset_viewInfo import NuScenesDataset_ViewInfo
 
 __all__ = [
     'KittiDataset', 'GroupSampler', 'DistributedGroupSampler',
@@ -27,5 +26,5 @@ __all__ = [
     'LoadAnnotations3D', 'SUNRGBDDataset', 'ScanNetDataset',
     'SemanticKITTIDataset', 'Custom3DDataset', 'LoadPointsFromMultiSweeps',
     'WaymoDataset', 'BackgroundPointsFilter', 'VoxelBasedPointSampler',
-    'NuScenesDataset_w2D', 'NuScenesDataset_wCam'
+    'NuScenesDataset_ViewInfo'
 ]

@@ -4,12 +4,10 @@ from .centerpoint_bbox_coders import CenterPointBBoxCoder
 from .delta_xyzwhlr_bbox_coder import DeltaXYZWLHRBBoxCoder
 from .partial_bin_based_bbox_coder import PartialBinBasedBBoxCoder
 from .transfusion_bbox_coder import TransFusionBBoxCoder
-from .implicitfusion_bbox_coder_old import ImplicitFusionBBoxCoder
-from .implicit_bbox_coder import ImplicitBBoxCoder
 from .camera_bbox_coder import CameraBBoxCoder
 
 __all__ = [
     'build_bbox_coder', 'DeltaXYZWLHRBBoxCoder', 'PartialBinBasedBBoxCoder',
-    'CenterPointBBoxCoder', 'AnchorFreeBBoxCoder', 'TransFusionBBoxCoder', 'ImplicitFusionBBoxCoder',
-    'ImplicitBBoxCoder', 'CameraBBoxCoder'
+    'CenterPointBBoxCoder', 'AnchorFreeBBoxCoder', 'TransFusionBBoxCoder',
+    'CameraBBoxCoder'
 ]

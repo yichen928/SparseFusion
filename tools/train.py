@@ -183,22 +183,16 @@ def main():
         for name, param in model.named_parameters():
             if 'pts' in name and 'pts_bbox_head' not in name:
                 param.requires_grad = False
-            if 'pts_bbox_head.shared_conv' in name and 'pts_bbox_head.shared_conv_img' not in name:
-                param.requires_grad = False
-            if 'pts_bbox_head.heatmap_head' in name and 'pts_bbox_head.heatmap_head_img' not in name:
-                param.requires_grad = False
-            if 'pts_bbox_head.point_transformer' in name:
-                param.requires_grad = False
-            if 'pts_bbox_head.class_encoding' in name:
-                param.requires_grad = False
 
-            # if 'pts_bbox_head.prediction_heads.0' in name:
-            #     param.requires_grad = False
-            # if 'pts_bbox_head.decoder.0' in name:
-            #     param.requires_grad = False
-
-            # if 'pts_bbox_head' in name and 'pts_bbox_head.fusion_transformer' not in name:
-            #     param.requires_grad = False
+            if 'freeze_lidar_detector' not in cfg or cfg['freeze_lidar_detector'] is True:
+                if 'pts_bbox_head.shared_conv' in name and 'pts_bbox_head.shared_conv_img' not in name:
+                    param.requires_grad = False
+                if 'pts_bbox_head.heatmap_head' in name and 'pts_bbox_head.heatmap_head_img' not in name:
+                    param.requires_grad = False
+                if 'pts_bbox_head.point_transformer' in name:
+                    param.requires_grad = False
+                if 'pts_bbox_head.class_encoding' in name:
+                    param.requires_grad = False
 
         from torch import nn
 
@@ -212,15 +206,12 @@ def main():
         model.pts_backbone.apply(fix_bn)
         model.pts_neck.apply(fix_bn)
 
-        model.pts_bbox_head.heatmap_head.apply(fix_bn)
-        model.pts_bbox_head.shared_conv.apply(fix_bn)
-        model.pts_bbox_head.class_encoding.apply(fix_bn)
-        model.pts_bbox_head.point_transformer.apply(fix_bn)
+        if 'freeze_lidar_detector' not in cfg or cfg['freeze_lidar_detector'] is True:
+            model.pts_bbox_head.heatmap_head.apply(fix_bn)
+            model.pts_bbox_head.shared_conv.apply(fix_bn)
+            model.pts_bbox_head.class_encoding.apply(fix_bn)
+            model.pts_bbox_head.point_transformer.apply(fix_bn)
 
-        # model.pts_bbox_head.decoder[0].apply(fix_bn)
-        # model.pts_bbox_head.prediction_heads[0].apply(fix_bn)
-
-        # model.pts_bbox_head.apply(fix_bn)
 
         for name, param in model.named_parameters():
             if param.requires_grad is True:

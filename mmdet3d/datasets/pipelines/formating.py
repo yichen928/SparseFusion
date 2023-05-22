@@ -52,7 +52,7 @@ class DefaultFormatBundle(object):
         for key in [
                 'proposals', 'gt_bboxes', 'gt_bboxes_ignore', 'gt_labels',
                 'gt_labels_3d', 'pts_instance_mask', 'pts_semantic_mask',
-                'gt_pts_centers_2d', 'gt_img_centers_2d', 'gt_visible_3d'
+                'gt_pts_centers_view', 'gt_img_centers_view', 'gt_visible_3d'
         ]:
             if key not in results:
                 continue
@@ -68,21 +68,21 @@ class DefaultFormatBundle(object):
                 results['gt_bboxes_3d'] = DC(
                     to_tensor(results['gt_bboxes_3d']))
 
-        if 'gt_bboxes_cam_3d' in results:
-            if isinstance(results['gt_bboxes_cam_3d'], BaseInstance3DBoxes):
-                results['gt_bboxes_cam_3d'] = DC(
-                    results['gt_bboxes_cam_3d'], cpu_only=True)
+        if 'gt_bboxes_cam_view' in results:
+            if isinstance(results['gt_bboxes_cam_view'], BaseInstance3DBoxes):
+                results['gt_bboxes_cam_view'] = DC(
+                    results['gt_bboxes_cam_view'], cpu_only=True)
             else:
-                results['gt_bboxes_cam_3d'] = DC(
-                    to_tensor(results['gt_bboxes_cam_3d']))
+                results['gt_bboxes_cam_view'] = DC(
+                    to_tensor(results['gt_bboxes_cam_view']))
 
-        if 'gt_bboxes_lidar' in results:
-            if isinstance(results['gt_bboxes_lidar'], BaseInstance3DBoxes):
-                results['gt_bboxes_lidar'] = DC(
-                    results['gt_bboxes_lidar'], cpu_only=True)
+        if 'gt_bboxes_lidar_view' in results:
+            if isinstance(results['gt_bboxes_lidar_view'], BaseInstance3DBoxes):
+                results['gt_bboxes_lidar_view'] = DC(
+                    results['gt_bboxes_lidar_view'], cpu_only=True)
             else:
-                results['gt_bboxes_lidar'] = DC(
-                    to_tensor(results['gt_bboxes_lidar']))
+                results['gt_bboxes_lidar_view'] = DC(
+                    to_tensor(results['gt_bboxes_lidar_view']))
 
         if 'gt_masks' in results:
             results['gt_masks'] = DC(results['gt_masks'], cpu_only=True)

@@ -2,6 +2,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .inverse_sigmoid import inverse_sigmoid
+
+def denormalize_pos(normal_pos, x_max, y_max, sigmoid=True):
+    max_xy = torch.Tensor([x_max, y_max]).to(normal_pos.device).view(1, 1, 2)
+    if sigmoid:
+        pos = normal_pos.sigmoid() * max_xy
+    else:
+        pos = normal_pos * max_xy
+    return pos
+
+
+def normalize_pos(pos, x_max, y_max):
+    max_xy = torch.Tensor([x_max, y_max]).to(pos.device).view(1, 1, 2)
+    normal_pos = pos / max_xy
+    return inverse_sigmoid(normal_pos)
+
 
 class LayerNorm(nn.Module):
     r""" LayerNorm that supports two data formats: channels_last (default) or channels_first.

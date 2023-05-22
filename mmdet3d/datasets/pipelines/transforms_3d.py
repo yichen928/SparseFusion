@@ -185,11 +185,11 @@ class OurRandomFlip3D(object):
         for id in range(len(input_dict['lidar2cam_r'])):
             input_dict['lidar2cam_r'][id] = input_dict['lidar2cam_r'][id] @ matrix
 
-        if 'gt_pts_centers_2d' in input_dict and input_dict['gt_pts_centers_2d'].shape[0] > 0:
-            input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] @ matrix
+        if 'gt_pts_centers_view' in input_dict and input_dict['gt_pts_centers_view'].shape[0] > 0:
+            input_dict['gt_pts_centers_view'] = input_dict['gt_pts_centers_view'] @ matrix
 
-        if 'gt_bboxes_lidar' in input_dict:
-            input_dict['gt_bboxes_lidar'].flip(direction)
+        if 'gt_bboxes_lidar_view' in input_dict:
+            input_dict['gt_bboxes_lidar_view'].flip(direction)
 
     def __call__(self, input_dict):
         """Call function to flip points, values in the ``bbox3d_fields`` and \
@@ -578,13 +578,11 @@ class OurGlobalRotScaleTrans(object):
                  rot_range=[-0.78539816, 0.78539816],
                  scale_ratio_range=[0.95, 1.05],
                  translation_std=[0, 0, 0],
-                 shift_height=False,
-                 virtual_depth=False):
+                 shift_height=False):
         self.rot_range = rot_range
         self.scale_ratio_range = scale_ratio_range
         self.translation_std = translation_std
         self.shift_height = shift_height
-        self.virtual_depth = virtual_depth
 
     def _trans_bbox_points(self, input_dict):
         """Private function to translate bounding boxes and points.
@@ -615,11 +613,11 @@ class OurGlobalRotScaleTrans(object):
         for id in range(len(input_dict['lidar2cam_t'])):
             input_dict['lidar2cam_t'][id] = input_dict['lidar2cam_t'][id] - input_dict['lidar2cam_r'][id] @ trans_factor
 
-        if 'gt_pts_centers_2d' in input_dict:
-            input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] + trans_factor
+        if 'gt_pts_centers_view' in input_dict:
+            input_dict['gt_pts_centers_view'] = input_dict['gt_pts_centers_view'] + trans_factor
 
-        if 'gt_bboxes_lidar' in input_dict:
-            input_dict['gt_bboxes_lidar'].translate(trans_factor)
+        if 'gt_bboxes_lidar_view' in input_dict:
+            input_dict['gt_bboxes_lidar_view'].translate(trans_factor)
 
     def _rot_bbox_points(self, input_dict):
         """Private function to rotate bounding boxes and points.
@@ -640,18 +638,17 @@ class OurGlobalRotScaleTrans(object):
                     noise_rotation, input_dict['points'])
                 input_dict['points'] = points
                 input_dict['pcd_rotation'] = rot_mat_T
-        # input_dict['points_instance'].rotate(noise_rotation)
 
         if rot_mat_T is not None:
             rot_mat_T_np = rot_mat_T.numpy()
             for id in range(len(input_dict['lidar2cam_r'])):
                 input_dict['lidar2cam_r'][id] = input_dict['lidar2cam_r'][id] @ rot_mat_T_np
 
-            if input_dict['gt_pts_centers_2d'].shape[0] > 0:
-                input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] @ rot_mat_T_np
+            if input_dict['gt_pts_centers_view'].shape[0] > 0:
+                input_dict['gt_pts_centers_view'] = input_dict['gt_pts_centers_view'] @ rot_mat_T_np
 
-            if 'gt_bboxes_lidar' in input_dict:
-                input_dict['gt_bboxes_lidar'].rotate(noise_rotation)
+            if 'gt_bboxes_lidar_view' in input_dict:
+                input_dict['gt_bboxes_lidar_view'].rotate(noise_rotation)
 
     def _scale_bbox_points(self, input_dict):
         """Private function to scale bounding boxes and points.
@@ -674,21 +671,19 @@ class OurGlobalRotScaleTrans(object):
         for key in input_dict['bbox3d_fields']:
             input_dict[key].scale(scale)
 
-        if 'gt_img_centers_2d' in input_dict and input_dict['gt_img_centers_2d'].shape[0] > 0:
-            if not self.virtual_depth:
-                input_dict['gt_img_centers_2d'][:, 2] *= scale
+        if 'gt_img_centers_view' in input_dict and input_dict['gt_img_centers_view'].shape[0] > 0:
+            input_dict['gt_img_centers_view'][:, 2] *= scale
 
         for id in range(len(input_dict['lidar2cam_t'])):
             input_dict['lidar2cam_t'][id] = input_dict['lidar2cam_t'][id] * scale
 
-        if 'gt_pts_centers_2d' in input_dict and input_dict['gt_pts_centers_2d'].shape[0] > 0:
-            input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] * scale
+        if 'gt_pts_centers_view' in input_dict and input_dict['gt_pts_centers_view'].shape[0] > 0:
+            input_dict['gt_pts_centers_view'] = input_dict['gt_pts_centers_view'] * scale
 
-            if not self.virtual_depth:
-                if 'gt_bboxes_cam_3d' in input_dict:
-                    input_dict['gt_bboxes_cam_3d'].scale(scale)
-            if 'gt_bboxes_lidar' in input_dict:
-                input_dict['gt_bboxes_lidar'].scale(scale)
+            if 'gt_bboxes_cam_view' in input_dict:
+                input_dict['gt_bboxes_cam_view'].scale(scale)
+            if 'gt_bboxes_lidar_view' in input_dict:
+                input_dict['gt_bboxes_lidar_view'].scale(scale)
 
     def _random_scale(self, input_dict):
         """Private function to randomly set the scale factor.
@@ -748,60 +743,6 @@ class OurGlobalRotScaleTrans(object):
         repr_str += ' shift_height={})'.format(self.shift_height)
         return repr_str
 
-#
-# @PIPELINES.register_module()
-# class OurGlobalRotScaleTrans_new(OurGlobalRotScaleTrans):
-#     """Apply global rotation, scaling and translation to a 3D scene.
-#
-#     Args:
-#         rot_range (list[float]): Range of rotation angle.
-#             Defaults to [-0.78539816, 0.78539816] (close to [-pi/4, pi/4]).
-#         scale_ratio_range (list[float]): Range of scale ratio.
-#             Defaults to [0.95, 1.05].
-#         translation_std (list[float]): The standard deviation of ranslation
-#             noise. This apply random translation to a scene by a noise, which
-#             is sampled from a gaussian distribution whose standard deviation
-#             is set by ``translation_std``. Defaults to [0, 0, 0]
-#         shift_height (bool): Whether to shift height.
-#             (the fourth dimension of indoor points) when scaling.
-#             Defaults to False.
-#     """
-#
-#     def _scale_bbox_points(self, input_dict):
-#         """Private function to scale bounding boxes and points.
-#
-#         Args:
-#             input_dict (dict): Result dict from loading pipeline.
-#
-#         Returns:
-#             dict: Results after scaling, 'points'and keys in \
-#                 input_dict['bbox3d_fields'] are updated in the result dict.
-#         """
-#         scale = input_dict['pcd_scale_factor']
-#         points = input_dict['points']
-#         points.scale(scale)
-#         if self.shift_height:
-#             assert 'height' in points.attribute_dims.keys()
-#             points.tensor[:, points.attribute_dims['height']] *= scale
-#         input_dict['points'] = points
-#
-#         for key in input_dict['bbox3d_fields']:
-#             input_dict[key].scale(scale)
-#
-#         # if input_dict['gt_img_centers_2d'].shape[0] > 0:
-#         #     input_dict['gt_img_centers_2d'][:, 2] *= scale
-#
-#         for id in range(len(input_dict['lidar2cam_t'])):
-#             # input_dict['lidar2cam_t'][id] = input_dict['lidar2cam_t'][id] / scale
-#             input_dict['lidar2cam_r'][id] = input_dict['lidar2cam_r'][id] / scale
-#
-#         if input_dict['gt_pts_centers_2d'].shape[0] > 0:
-#             input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'] * scale
-#
-#             # if 'gt_bboxes_cam_3d' in input_dict:
-#             #     input_dict['gt_bboxes_cam_3d'].scale(scale)
-#             if 'gt_bboxes_lidar' in input_dict:
-#                 input_dict['gt_bboxes_lidar'].scale(scale)
 
 @PIPELINES.register_module()
 class PointShuffle(object):
@@ -913,18 +854,18 @@ class OurObjectRangeFilter(object):
             gt_visible_3d = gt_visible_3d[mask.numpy().astype(np.bool)]
             input_dict['gt_visible_3d'] = gt_visible_3d
 
-        pts_2d = input_dict['gt_pts_centers_2d']
+        pts_2d = input_dict['gt_pts_centers_view']
         mask_2d = (pts_2d[:, 0] > self.bev_range[0]) & (pts_2d[:, 0] < self.bev_range[2]) & (pts_2d[:, 1] > self.bev_range[1]) & (pts_2d[:, 1] < self.bev_range[3])
 
         input_dict['gt_bboxes'] = input_dict['gt_bboxes'][mask_2d]
         input_dict['gt_labels'] = input_dict['gt_labels'][mask_2d]
 
-        input_dict['gt_img_centers_2d'] = input_dict['gt_img_centers_2d'][mask_2d]
-        input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'][mask_2d]
-        if 'gt_bboxes_cam_3d' in input_dict:
-            input_dict['gt_bboxes_cam_3d'] = input_dict['gt_bboxes_cam_3d'][mask_2d]
+        input_dict['gt_img_centers_view'] = input_dict['gt_img_centers_view'][mask_2d]
+        input_dict['gt_pts_centers_view'] = input_dict['gt_pts_centers_view'][mask_2d]
+        if 'gt_bboxes_cam_view' in input_dict:
+            input_dict['gt_bboxes_cam_view'] = input_dict['gt_bboxes_cam_view'][mask_2d]
 
-        input_dict['gt_bboxes_lidar'] = input_dict['gt_bboxes_lidar'][mask_2d]
+        input_dict['gt_bboxes_lidar_view'] = input_dict['gt_bboxes_lidar_view'][mask_2d]
 
         return input_dict
 
@@ -1008,15 +949,15 @@ class ObjectNameFilter(object):
                 input_dict['gt_bboxes'] = input_dict['gt_bboxes'][gt_bboxes_mask]
                 input_dict['gt_labels'] = input_dict['gt_labels'][gt_bboxes_mask]
 
-                if 'gt_img_centers_2d' in input_dict:
-                    input_dict['gt_img_centers_2d'] = input_dict['gt_img_centers_2d'][gt_bboxes_mask]
-                    input_dict['gt_pts_centers_2d'] = input_dict['gt_pts_centers_2d'][gt_bboxes_mask]
+                if 'gt_img_centers_view' in input_dict:
+                    input_dict['gt_img_centers_view'] = input_dict['gt_img_centers_view'][gt_bboxes_mask]
+                    input_dict['gt_pts_centers_view'] = input_dict['gt_pts_centers_view'][gt_bboxes_mask]
 
-                if 'gt_bboxes_cam_3d' in input_dict:
-                    input_dict['gt_bboxes_cam_3d'] = input_dict['gt_bboxes_cam_3d'][gt_bboxes_mask]
+                if 'gt_bboxes_cam_view' in input_dict:
+                    input_dict['gt_bboxes_cam_view'] = input_dict['gt_bboxes_cam_view'][gt_bboxes_mask]
 
-                if 'gt_bboxes_lidar' in input_dict:
-                    input_dict['gt_bboxes_lidar'] = input_dict['gt_bboxes_lidar'][gt_bboxes_mask]
+                if 'gt_bboxes_lidar_view' in input_dict:
+                    input_dict['gt_bboxes_lidar_view'] = input_dict['gt_bboxes_lidar_view'][gt_bboxes_mask]
 
         return input_dict
 

@@ -235,12 +235,12 @@ class MyResize(object):
             results[key] = bboxes
 
     def _resize_centers(self, results):
-        centers = results['gt_img_centers_2d']
+        centers = results['gt_img_centers_view']
         centers[:, :2] = centers[:, :2] * results['scale_factor'][:2]
         img_shape = results['img_shape']
         centers[:, 0] = np.clip(centers[:, 0], 0, img_shape[1])
         centers[:, 1] = np.clip(centers[:, 1], 0, img_shape[0])
-        results['gt_img_centers_2d'] = centers
+        results['gt_img_centers_view'] = centers
 
     def _resize_masks(self, results):
         """Resize masks with ``results['scale']``"""
@@ -316,7 +316,7 @@ class MyResize(object):
         self._resize_bboxes(results)
         self._resize_masks(results)
         self._resize_seg(results)
-        if 'gt_img_centers_2d' in results:
+        if 'gt_img_centers_view' in results:
             self._resize_centers(results)
 
         if 'cam_intrinsic' in results:
@@ -1076,8 +1076,8 @@ class MyLoadAnnotations3D(LoadAnnotations3D):
         Returns:
             dict: The dict containing loaded label annotations.
         """
-        results['gt_pts_centers_2d'] = results['ann_info']['pts_centers_2d']
-        results['gt_img_centers_2d'] = results['ann_info']['img_centers_2d']
+        results['gt_pts_centers_view'] = results['ann_info']['pts_centers_view']
+        results['gt_img_centers_view'] = results['ann_info']['img_centers_view']
 
         return results
 
@@ -1090,8 +1090,8 @@ class MyLoadAnnotations3D(LoadAnnotations3D):
         Returns:
             dict: The dict containing loaded label annotations.
         """
-        results['gt_bboxes_cam_3d'] = results['ann_info']['bboxes_cam_3d']
-        results['gt_bboxes_lidar'] = results['ann_info']['bboxes_lidar']
+        results['gt_bboxes_cam_view'] = results['ann_info']['bboxes_cam_view']
+        results['gt_bboxes_lidar_view'] = results['ann_info']['bboxes_lidar_view']
 
         return results
 
@@ -1100,18 +1100,17 @@ class MyLoadAnnotations3D(LoadAnnotations3D):
 
         return results
 
+
 @PIPELINES.register_module()
 class SparseDepth(object):
     """
     Generate a sparse depth map from the point clouds, the depth map should have the same size with image features
     """
-    def __init__(self, scale_factors, depth_mean=14.41, depth_var=156.89, exp_time=0, depth_sine_L=1, virtual_depth=False):
+    def __init__(self, scale_factors, depth_mean=14.41, depth_var=156.89, exp_time=0):
         self.scale_factors = scale_factors
         self.depth_mean = depth_mean
         self.depth_var = depth_var
         self.exp_time = exp_time
-        self.depth_sine_L = depth_sine_L
-        self.virtual_depth = virtual_depth
 
     def __call__(self, results):
         all_points = results['points'].tensor
@@ -1122,12 +1121,6 @@ class SparseDepth(object):
         lidar2cam_rs = results['lidar2cam_r']
         lidar2cam_ts = results['lidar2cam_t']
         cam_intrinsic = results['cam_intrinsic']
-
-        # w_scale = results['scale_factor'][0]
-        # h_scale = results['scale_factor'][1]
-
-        # h_shape = int(results['ori_shape'][0] * h_scale)
-        # w_shape = int(results['ori_shape'][1] * w_scale)
 
         depth_features = []
         for view_id in range(len(lidar2cam_rs)):
@@ -1171,12 +1164,6 @@ class SparseDepth(object):
             depth_features_view = []
             w_scale_shape = results['pad_shape'][1] // self.scale_factors[0]
             h_scale_shape = results['pad_shape'][0] // self.scale_factors[0]
-
-            if self.virtual_depth:
-                # if 'pcd_scale_factor' in results:
-                #     depth = depth / results['pcd_scale_factor']
-                if 'img_scale_ratios' in results:
-                    depth = depth / results['img_scale_ratios'][view_id]
 
             for scale in self.scale_factors:
                 w_scale_factor = 1.0 / scale
@@ -1216,271 +1203,8 @@ class SparseDepth(object):
             depth_features.append(depth_features_view)
         depth_features = torch.stack(depth_features, dim=0)  # [num_view, num_scale, 2, h_scale_shape, w_scale_shape)
 
-        if self.depth_sine_L > 1:
-            depth_value = depth_features[:, :, 0]  # [num_view, num_scale, h_scale_shape, w_scale_shape)
-            depth_value = depth_value / 40 - 1
-            depth_sine = []
-            for i in range(self.depth_sine_L):
-                sin = torch.sin((2**i) * np.pi * depth_value)
-                cos = torch.cos((2**i) * np.pi * depth_value)
-                sin = sin * depth_features[:, :, 1]
-                cos = cos * depth_features[:, :, 1]
-                depth_sine.append(sin)
-                depth_sine.append(cos)
-            depth_features = torch.stack(depth_sine, dim=2)  # [num_view, num_scale, L*2, h_scale_shape, w_scale_shape)
-        else:
-            depth_features[:, :, 0] = (depth_features[:, :, 0] - self.depth_mean) / np.sqrt(self.depth_var)
-            depth_features[:, :, 0] = depth_features[:, :, 0] * depth_features[:, :, 1]
+        depth_features[:, :, 0] = (depth_features[:, :, 0] - self.depth_mean) / np.sqrt(self.depth_var)
+        depth_features[:, :, 0] = depth_features[:, :, 0] * depth_features[:, :, 1]
         results['sparse_depth'] = depth_features
-
-        return results
-
-# Full kernels
-FULL_KERNEL_3 = np.ones((3, 3), np.uint8)
-FULL_KERNEL_5 = np.ones((5, 5), np.uint8)
-FULL_KERNEL_7 = np.ones((7, 7), np.uint8)
-FULL_KERNEL_9 = np.ones((9, 9), np.uint8)
-FULL_KERNEL_31 = np.ones((31, 31), np.uint8)
-
-# 3x3 cross kernel
-CROSS_KERNEL_3 = np.asarray(
-    [
-        [0, 1, 0],
-        [1, 1, 1],
-        [0, 1, 0],
-    ], dtype=np.uint8)
-
-# 5x5 cross kernel
-CROSS_KERNEL_5 = np.asarray(
-    [
-        [0, 0, 1, 0, 0],
-        [0, 0, 1, 0, 0],
-        [1, 1, 1, 1, 1],
-        [0, 0, 1, 0, 0],
-        [0, 0, 1, 0, 0],
-    ], dtype=np.uint8)
-
-# 5x5 diamond kernel
-DIAMOND_KERNEL_5 = np.array(
-    [
-        [0, 0, 1, 0, 0],
-        [0, 1, 1, 1, 0],
-        [1, 1, 1, 1, 1],
-        [0, 1, 1, 1, 0],
-        [0, 0, 1, 0, 0],
-    ], dtype=np.uint8)
-
-# 7x7 cross kernel
-CROSS_KERNEL_7 = np.asarray(
-    [
-        [0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-    ], dtype=np.uint8)
-
-# 7x7 diamond kernel
-DIAMOND_KERNEL_7 = np.asarray(
-    [
-        [0, 0, 0, 1, 0, 0, 0],
-        [0, 0, 1, 1, 1, 0, 0],
-        [0, 1, 1, 1, 1, 1, 0],
-        [1, 1, 1, 1, 1, 1, 1],
-        [0, 1, 1, 1, 1, 1, 0],
-        [0, 0, 1, 1, 1, 0, 0],
-        [0, 0, 0, 1, 0, 0, 0],
-    ], dtype=np.uint8)
-
-
-def fill_in_fast(depth_map, max_depth=100.0, custom_kernel=DIAMOND_KERNEL_5,
-                 extrapolate=False, blur_type='bilateral'):
-    """Fast, in-place depth completion.
-    Args:
-        depth_map: projected depths
-        max_depth: max depth value for inversion
-        custom_kernel: kernel to apply initial dilation
-        extrapolate: whether to extrapolate by extending depths to top of
-            the frame, and applying a 31x31 full kernel dilation
-        blur_type:
-            'bilateral' - preserves local structure (recommended)
-            'gaussian' - provides lower RMSE
-    Returns:
-        depth_map: dense depth map
-    """
-
-    # Invert
-    valid_pixels = (depth_map > 0.1)
-    depth_map[valid_pixels] = max_depth - depth_map[valid_pixels]
-
-    # Dilate
-    depth_map = cv2.dilate(depth_map, custom_kernel)
-
-    # Hole closing
-    # depth_map = cv2.morphologyEx(depth_map, cv2.MORPH_CLOSE, FULL_KERNEL_3)
-    depth_map = cv2.morphologyEx(depth_map, cv2.MORPH_CLOSE, FULL_KERNEL_5)
-
-    # Fill empty spaces with dilated values
-    empty_pixels = (depth_map < 0.1)
-    # dilated = cv2.dilate(depth_map, FULL_KERNEL_7)
-    dilated = cv2.dilate(depth_map, FULL_KERNEL_5)
-    depth_map[empty_pixels] = dilated[empty_pixels]
-
-    # Extend highest pixel to top of image
-    if extrapolate:
-        top_row_pixels = np.argmax(depth_map > 0.1, axis=0)
-        top_pixel_values = depth_map[top_row_pixels, range(depth_map.shape[1])]
-
-        for pixel_col_idx in range(depth_map.shape[1]):
-            depth_map[0:top_row_pixels[pixel_col_idx], pixel_col_idx] = \
-                top_pixel_values[pixel_col_idx]
-
-        # Large Fill
-        empty_pixels = depth_map < 0.1
-        dilated = cv2.dilate(depth_map, FULL_KERNEL_31)
-        depth_map[empty_pixels] = dilated[empty_pixels]
-
-    # # Median blur
-    depth_map = cv2.medianBlur(depth_map, 3)
-    # depth_map = cv2.medianBlur(depth_map, 5)
-
-    # Bilateral or Gaussian blur
-    if blur_type == 'bilateral':
-        # Bilateral blur
-        depth_map = cv2.bilateralFilter(depth_map, 5, 1.5, 2.0)
-        # depth_map = cv2.bilateralFilter(depth_map, 3, 1.5, 2.0)
-
-    elif blur_type == 'gaussian':
-        # Gaussian blur
-        valid_pixels = (depth_map > 0.1)
-        blurred = cv2.GaussianBlur(depth_map, (5, 5), 0)
-        depth_map[valid_pixels] = blurred[valid_pixels]
-
-    # Invert
-    valid_pixels = (depth_map > 0.1)
-    depth_map[valid_pixels] = max_depth - depth_map[valid_pixels]
-
-    return depth_map
-
-
-@PIPELINES.register_module()
-class SparseDepthCompletion(object):
-    """
-    Generate a sparse depth map from the point clouds, the depth map should have the same size with image features
-    """
-    def __init__(self, scale_factors, depth_mean=14.41, depth_var=156.89, virtual_depth=False):
-        self.scale_factors = scale_factors
-        self.depth_mean = depth_mean
-        self.depth_var = depth_var
-        self.virtual_depth = virtual_depth
-
-    def __call__(self, results):
-        all_points = results['points'].tensor
-        curr_mask = all_points[:, 4] == 0
-        points = all_points[curr_mask]
-        points = points[:, :3]
-        points_4d = torch.cat([points, torch.ones_like(points[:, :1])], dim=1)
-        lidar2cam_rs = results['lidar2cam_r']
-        lidar2cam_ts = results['lidar2cam_t']
-        cam_intrinsic = results['cam_intrinsic']
-
-        # w_scale = results['scale_factor'][0]
-        # h_scale = results['scale_factor'][1]
-
-        # h_shape = int(results['ori_shape'][0] * h_scale)
-        # w_shape = int(results['ori_shape'][1] * w_scale)
-
-        depth_features = []
-        sparse_depth_features = []
-        for view_id in range(len(lidar2cam_rs)):
-            if 'valid_shape' in results:
-                h_shape = int(results['valid_shape'][view_id, 1])
-                w_shape = int(results['valid_shape'][view_id, 0])
-            else:
-                h_shape = results['pad_shape'][0]
-                w_shape = results['pad_shape'][1]
-
-            cam_ext = np.eye(4)
-            cam_int = np.eye(4)
-
-            cam_ext[:3, :3] = lidar2cam_rs[view_id]
-            cam_ext[:3, 3] = lidar2cam_ts[view_id]
-            cam_int[:3, :3] = cam_intrinsic[view_id]
-
-            cam_ext = torch.from_numpy(cam_ext).type_as(points_4d)
-            cam_int = torch.from_numpy(cam_int).type_as(points_4d)
-
-            points_4d_view = points_4d @ cam_ext.T
-            points_4d_view = points_4d_view @ cam_int.T
-
-            points_2d_view = points_4d_view[:, :2]
-            depth = points_4d_view[:, 2]
-            depth = torch.clamp(depth, min=1e-4)
-
-            points_2d_view[:, 0] = points_2d_view[:, 0] / depth
-            points_2d_view[:, 1] = points_2d_view[:, 1] / depth
-
-            valid_mask = (points_2d_view[:, 0] > 0) & (points_2d_view[:, 0] < w_shape-1) & \
-                         (points_2d_view[:, 1] > 0) & (points_2d_view[:, 1] < h_shape-1)
-
-            points_2d_view = points_2d_view[valid_mask]
-            depth = depth[valid_mask]
-
-            sort_id = np.argsort(-depth)
-            points_2d_view = points_2d_view[sort_id]
-            depth = depth[sort_id]
-
-            depth_features_view = []
-            sparse_depth_features_view = []
-            w_scale_shape = results['pad_shape'][1] // self.scale_factors[0]
-            h_scale_shape = results['pad_shape'][0] // self.scale_factors[0]
-
-            if self.virtual_depth:
-                if 'pcd_scale_factor' in results:
-                    depth = depth / results['pcd_scale_factor']
-                if 'img_scale_ratios' in results:
-                    depth = depth / results['img_scale_ratios'][view_id]
-
-            for scale in self.scale_factors:
-                w_scale_factor = 1.0 / scale
-                h_scale_factor = 1.0 / scale
-
-                scale_factor = torch.Tensor([[w_scale_factor, h_scale_factor]])
-                depth_feature = torch.zeros((2, h_scale_shape, w_scale_shape))
-
-                points_2d_view_scale = points_2d_view * scale_factor
-
-                cx = points_2d_view_scale[:, 0].long()
-                cy = points_2d_view_scale[:, 1].long()
-
-                depth_feature[0, cy, cx] = depth
-                depth_feature[1, cy, cx] = 1
-
-                depth_map = copy.deepcopy(depth_feature[0]).numpy()
-                depth_max = max(np.max(depth_map) + 20, 100)
-                dense_depth_map = fill_in_fast(depth_map, depth_max, extrapolate=True)
-
-                # scale_depth_map = cv2.resize(depth_map, (0, 0), fx=w_scale_factor, fy=h_scale_factor, interpolation=cv2.INTER_NEAREST)
-                dense_depth_feature = torch.from_numpy(dense_depth_map)
-
-                depth_features_view.append(dense_depth_feature[None])
-                sparse_depth_features_view.append(depth_feature)
-
-            depth_features_view = torch.stack(depth_features_view, dim=0)  # [num_scale, 1, h_scale_shape, w_scale_shape)
-            depth_features.append(depth_features_view)
-
-            sparse_depth_features_view = torch.stack(sparse_depth_features_view, dim=0)  # [num_scale, 2, h_scale_shape, w_scale_shape)
-            sparse_depth_features.append(sparse_depth_features_view)
-        depth_features = torch.stack(depth_features, dim=0)  # [num_view, num_scale, 1, h_scale_shape, w_scale_shape)
-        sparse_depth_features = torch.stack(sparse_depth_features, dim=0)  # [num_view, num_scale, 2, h_scale_shape, w_scale_shape)
-
-        # depth_mask = depth_features[:, :, 0] > 0
-
-        sparse_depth_features[:, :, 0] = (sparse_depth_features[:, :, 0] - self.depth_mean) / np.sqrt(self.depth_var)
-        sparse_depth_features[:, :, 0] = sparse_depth_features[:, :, 0] * sparse_depth_features[:, :, 1]
-
-        results['sparse_depth'] = torch.cat([sparse_depth_features, depth_features], dim=2)
 
         return results

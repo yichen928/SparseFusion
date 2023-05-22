@@ -10,11 +10,7 @@ from .ssd3dnet import SSD3DNet
 from .votenet import VoteNet
 from .voxelnet import VoxelNet
 from .transfusion import TransFusionDetector
-from .implicitfusion import ImplicitFusionDetector
-from .implicitfusion2D3D import ImplicitFusionDetector2D_3D
-from .implicitfusion2D3D_cross import ImplicitFusionDetector2D_3D_Cross
-from .implicitfusion2D3D_ms import ImplicitFusionDetector2D_3D_MS
-from .implicitfusion_cam_ms import ImplicitFusionDetector_3D_Cam_MS
+from .sparsefusion import SparseFusionDetector
 
 __all__ = [
     'Base3DDetector',
@@ -30,9 +26,5 @@ __all__ = [
     'SSD3DNet',
     'ImVoteNet',
     'TransFusionDetector',
-    'ImplicitFusionDetector',
-    'ImplicitFusionDetector2D_3D',
-    'ImplicitFusionDetector2D_3D_Cross',
-    'ImplicitFusionDetector2D_3D_MS',
-    'ImplicitFusionDetector_3D_Cam_MS'
+    'SparseFusionDetector',
 ]

@@ -76,8 +76,8 @@ class OurRandomAffine:
     def _transform_bbox(self, results, warp_mats, flips, width, height):
         valid_mask = np.ones(results['gt_labels'].shape[0]) > 0
 
-        if 'gt_bboxes_cam_3d' in results:
-            bboxes_cam = results['gt_bboxes_cam_3d']
+        if 'gt_bboxes_cam_view' in results:
+            bboxes_cam = results['gt_bboxes_cam_view']
         else:
             bboxes_cam = None
 
@@ -97,7 +97,7 @@ class OurRandomAffine:
                     bboxes_cam.tensor[bbox_mask, 6] = -bboxes_cam.tensor[bbox_mask, 6] + np.pi
 
             bbox_view = results['gt_bboxes'][bbox_mask]
-            centers_view = results['gt_img_centers_2d'][bbox_mask, :2]
+            centers_view = results['gt_img_centers_view'][bbox_mask, :2]
             num_bboxes = bbox_view.shape[0]
 
             xtl = bbox_view[:, 0] - bbox_view[:, 2] / 2
@@ -154,16 +154,16 @@ class OurRandomAffine:
             valid_mask[bbox_mask] = valid_mask_view
 
             results['gt_bboxes'][bbox_mask] = warp_bboxes
-            results['gt_img_centers_2d'][bbox_mask, :2] = new_center_points
+            results['gt_img_centers_view'][bbox_mask, :2] = new_center_points
 
-        if 'gt_bboxes_cam_3d' in results:
-            results['gt_bboxes_cam_3d'] = bboxes_cam[valid_mask]
+        if 'gt_bboxes_cam_view' in results:
+            results['gt_bboxes_cam_view'] = bboxes_cam[valid_mask]
 
-        results['gt_bboxes_lidar'] = results['gt_bboxes_lidar'][valid_mask]
+        results['gt_bboxes_lidar_view'] = results['gt_bboxes_lidar_view'][valid_mask]
 
         results['gt_bboxes'] = results['gt_bboxes'][valid_mask]
-        results['gt_img_centers_2d'] = results['gt_img_centers_2d'][valid_mask]
-        results['gt_pts_centers_2d'] = results['gt_pts_centers_2d'][valid_mask]
+        results['gt_img_centers_view'] = results['gt_img_centers_view'][valid_mask]
+        results['gt_pts_centers_view'] = results['gt_pts_centers_view'][valid_mask]
         results['gt_labels'] = results['gt_labels'][valid_mask]
         return results
 
