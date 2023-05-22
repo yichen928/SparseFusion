@@ -62,7 +62,7 @@ SparseFusion
 |   |   ├── v1.0-trainval
 ```
 
-Then, you can select  **either** of the two strategies to preprocess the data.
+Then, you can select  **either** of the two ways to preprocess the data.
 
 1. Run the following two commands sequentially. 
 
