@@ -90,6 +90,9 @@ bash tools/dist_train.sh configs/sparsefusion_nusc_voxel_LC_r50.py 4 --work-dir 
 bash tools/dist_test.sh configs/sparsefusion_nusc_voxel_LC_r50.py ${CHECKPOINT_FILE} 4 --eval=bbox
 ```
 
+## Contact:
+If you have any questions, feel free to open an issue or contact us at yichen_xie@berkeley.edu.
+
 ## Acknowledgments
 
 We sincerely thank the authors of [mmdetetcion3d](https://github.com/open-mmlab/mmdetection3d), [TransFusion](https://github.com/XuyangBai/TransFusion), [BEVFusion](https://github.com/mit-han-lab/bevfusion), [MSMDFusion](https://github.com/SxJyJay/MSMDFusion), and [DeepInteraction](https://github.com/fudan-zvg/DeepInteraction) for providing their codes or pretrained weights.
