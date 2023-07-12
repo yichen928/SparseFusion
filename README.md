@@ -30,7 +30,14 @@ We do not use any test-time augmentations or model ensembles to get these result
 #### Installation
 + We test our code on an environment with CUDA 11.5, python 3.7, PyTorch 1.7.1, TorchVision 0.8.2, NumPy 1.20.0, and numba 0.48.0.
 
-+ We use `mmdet3d==0.11.0, mmdet==2.10.0, mmcv==1.2.7 ` for our code. Please refer to the [official instruction](https://mmdetection3d.readthedocs.io/en/v0.11.0/getting_started.html#install-mmdetection3d) of mmdet3d for installation. 
++ We use `mmdet==2.10.0, mmcv==1.2.7 ` for our code. Please refer to their official instructions for installation.
+
++ You can install `mmdet3d==0.11.0` directly from our repo by
+  ```
+  cd SparseFusion
+  pip install -e .
+  ```
+
 
 + We use `spconv==2.3.3`. Please follow the [official instruction](https://github.com/traveller59/spconv) to install it based on your CUDA version.
 
