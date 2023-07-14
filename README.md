@@ -1,4 +1,4 @@
-# SparseFusion: Fusing Multi-Modal Sparse Representations for Multi-Sensor 3D Object Detection
+# [ICCV 2023] SparseFusion: Fusing Multi-Modal Sparse Representations for Multi-Sensor 3D Object Detection
 ![video](video.gif)
 
 ## Abstract
@@ -6,9 +6,13 @@ We propose SparseFusion, a novel multi-sensor 3D detection method that exclusive
 
 [[paper link]](https://arxiv.org/abs/2304.14340)
 
+## Updates
+[2023-7-13] 🔥SparseFusion has been accepted to ICCV 2023🔥
+[2023-3-21] We release the code of SparseFusion. 
 
 ## Overview
 ![teaser](teaser.png)
+
 Compared to existing fusion algorithms, SparseFusion achieves state-of-the-art performance as well as the fastest inference speed on nuScenes test set. †: Official [repository](https://github.com/zehuichen123/AutoAlignV2) of AutoAlignV2 uses flip as test-time augmentation. ‡: We use BEVFusion-base results in the official [repository](https://github.com/mit-han-lab/bevfusion) of BEVFusion to match the input resolutions of other methods. $\S:$ Swin-T is adopted as image backbone.
 ## NuScene Performance
 We do not use any test-time augmentations or model ensembles to get these results. We have released the configure files and pretrained checkpoints to reproduce our results.
