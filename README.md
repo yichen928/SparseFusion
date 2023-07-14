@@ -102,7 +102,7 @@ bash tools/dist_train.sh configs/sparsefusion_nusc_voxel_LC_r50.py 4 --work-dir 
 bash tools/dist_test.sh configs/sparsefusion_nusc_voxel_LC_r50.py ${CHECKPOINT_FILE} 4 --eval=bbox
 ```
 
-Note: We use A6000 GPUs (48GB large memory) for model training. If you encounter out-of-memory errors, please consider: 1) decrease the per-GPU batch size and learning rate accordingly. 2) limit the maximal power of your GPU with `nvidia-smi -pl xxx`. This would not greatly slow your training but can save lots of memory. We will further optimize it soon!
+Note: We use A6000 GPUs (48GB large memory) for model training. If you encounter out-of-memory errors, please consider decreasing the per-GPU batch size and learning rate accordingly. 
 
 ## Contact
 If you have any questions, feel free to open an issue or contact us at yichen_xie@berkeley.edu.
