@@ -7,8 +7,9 @@ We propose SparseFusion, a novel multi-sensor 3D detection method that exclusive
 [[paper link]](https://arxiv.org/abs/2304.14340)
 
 ## Updates
-[2023-7-13] 🔥SparseFusion has been accepted to ICCV 2023🔥
-[2023-3-21] We release the code of SparseFusion. 
+[2023-7-13] 🔥SparseFusion has been accepted to ICCV 2023!🔥
+
+[2023-3-21] We release the first version code of SparseFusion. 
 
 ## Overview
 ![teaser](teaser.png)
