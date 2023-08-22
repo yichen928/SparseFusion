@@ -669,7 +669,6 @@ class SparseFusionHead2D_Deform(nn.Module):
             on_the_image_sample = on_the_image[sample_idx]  # [num_view, H*W]
             bincount = torch.sum(on_the_image_sample, dim=1)
             max_len = torch.max(bincount)
-
             sample_query_feature = torch.zeros([self.num_views, self.hidden_channel, max_len], device=points_2d.device)
             sample_query_pos = torch.zeros([self.num_views, max_len, 3], device=points_2d.device)
             sample_reference_points = torch.zeros([self.num_views, max_len, 2], device=points_2d.device)
@@ -702,20 +701,39 @@ class SparseFusionHead2D_Deform(nn.Module):
 
             sample_reference_points = sample_reference_points[:, :, None].repeat(1, 1, self.level_num, 1)
 
-            if input_padding_mask is None:
+            if batch_size == 1: # whether it is doing evaluation or training
+                if input_padding_mask is None:
+                    sample_input_padding_mask = None
+                else:
+                    sample_input_padding_mask = input_padding_mask[sample_idx:sample_idx+1]
                 output = self.cross_heatmap_decoder(
                     sample_query_feature, img_feats_stack[sample_idx],
                     sample_query_pos, normal_img_feats_pos_stack.repeat(self.num_views, 1, 1),
                     reference_points=sample_reference_points, level_start_index=level_start_index, spatial_shapes=spatial_shapes,
-                    query_padding_mask=sample_padding_mask
+                    query_padding_mask=sample_padding_mask, input_padding_mask=sample_input_padding_mask
                 )
             else:
-                output = self.cross_heatmap_decoder(
-                    sample_query_feature, img_feats_stack[sample_idx],
-                    sample_query_pos, normal_img_feats_pos_stack.repeat(self.num_views, 1, 1),
-                    reference_points=sample_reference_points, level_start_index=level_start_index, spatial_shapes=spatial_shapes,
-                    query_padding_mask=sample_padding_mask, input_padding_mask=input_padding_mask[sample_idx:sample_idx+1]
-                )
+                output = []
+                for view_idx in range(self.num_views):
+                    view_query_feature = sample_query_feature[view_idx, :, torch.logical_not(sample_padding_mask[view_idx])]
+                    view_query_pos = sample_query_pos[view_idx, torch.logical_not(sample_padding_mask[view_idx])]
+                    view_reference_points = sample_reference_points[view_idx, torch.logical_not(sample_padding_mask[view_idx])]
+
+                    if input_padding_mask is None:
+                        view_input_padding_mask = None
+                    else:
+                        view_input_padding_mask = input_padding_mask[sample_idx, view_idx, None]
+
+                    output_item = self.cross_heatmap_decoder(
+                        view_query_feature[None], img_feats_stack[sample_idx, view_idx, None],
+                        view_query_pos[None], normal_img_feats_pos_stack,
+                        reference_points=view_reference_points[None], level_start_index=level_start_index, spatial_shapes=spatial_shapes,
+                        input_padding_mask=view_input_padding_mask
+                    )
+                    output_item_pad = torch.zeros([output_item.shape[1], sample_padding_mask.shape[1]]).type_as(output_item)
+                    output_item_pad[:, torch.logical_not(sample_padding_mask[view_idx])] = output_item[0]
+                    output.append(output_item_pad)
+                output = torch.stack(output, dim=0)
 
             for view_idx in range(self.num_views):
                 view_count = bincount[view_idx]
