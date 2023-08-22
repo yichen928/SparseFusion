@@ -7,6 +7,8 @@ We propose SparseFusion, a novel multi-sensor 3D detection method that exclusive
 [[paper link]](https://arxiv.org/abs/2304.14340) [[Chinese summary (自动驾驶之心)]](https://zhuanlan.zhihu.com/p/630231104)
 
 ## Updates
+[2023-8-21] Much better training GPU memory efficiency (45 GB -> 29 GB per-GPU) with no hurt to the performance and speed!
+
 [2023-7-13] 🔥SparseFusion has been accepted to ICCV 2023!🔥
 
 [2023-3-21] We release the first version code of SparseFusion. 
@@ -35,7 +37,7 @@ We do not use any test-time augmentations or model ensembles to get these result
 #### Installation
 + We test our code on an environment with CUDA 11.5, python 3.7, PyTorch 1.7.1, TorchVision 0.8.2, NumPy 1.20.0, and numba 0.48.0.
 
-+ We use `mmdet==2.10.0, mmcv==1.2.7 ` for our code. Please refer to their official instructions for installation.
++ We use `mmdet==2.10.0, mmcv==1.2.7` for our code. Please refer to their official instructions for installation.
 
 + You can install `mmdet3d==0.11.0` directly from our repo by
   ```
@@ -102,7 +104,7 @@ bash tools/dist_train.sh configs/sparsefusion_nusc_voxel_LC_r50.py 4 --work-dir 
 bash tools/dist_test.sh configs/sparsefusion_nusc_voxel_LC_r50.py ${CHECKPOINT_FILE} 4 --eval=bbox
 ```
 
-Note: We use A6000 GPUs (48GB large memory) for model training. If you encounter out-of-memory errors, please consider decreasing the per-GPU batch size and learning rate accordingly. We will update a more memory-efficient version soon!
+Note: We use A6000 GPUs (48GB per-GPU memory) for model training. The training of SparseFusion model (ResNet50 backbone) requires ~29 GB per-GPU memory.
 
 ## Contact
 If you have any questions, feel free to open an issue or contact us at yichen_xie@berkeley.edu.
