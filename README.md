@@ -7,7 +7,7 @@ We propose SparseFusion, a novel multi-sensor 3D detection method that exclusive
 [[paper link]](https://arxiv.org/abs/2304.14340) [[Chinese summary (自动驾驶之心)]](https://zhuanlan.zhihu.com/p/630231104)
 
 ## Updates
-[2023-8-21] Much better training GPU memory efficiency (45 GB -> 29 GB per-GPU) with no hurt to the performance and speed!
+[2023-8-21] Much better training GPU memory efficiency (45GB -> 29GB) with no hurt to the performance and speed!
 
 [2023-7-13] 🔥SparseFusion has been accepted to ICCV 2023!🔥
 
