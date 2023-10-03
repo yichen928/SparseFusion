@@ -3,7 +3,7 @@
 ## Common settings and notes
 
 - The experiments are run with PyTorch 1.7.0, CUDA 10.1 and CUDNN 7.6
-- The training is conducted on 8 Telsa V100 GPUs
+- The training is conducted on 8 Tesla V100 GPUs
 
 ## Waymo 3D Detection
 
