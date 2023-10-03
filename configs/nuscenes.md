@@ -3,7 +3,7 @@
 ## Common settings and notes
 
 - The experiments are run with PyTorch 1.7.0, CUDA 10.1 and CUDNN 7.6
-- The training is conducted on 8 Telsa V100 GPUs
+- The training is conducted on 8 Tesla V100 GPUs
 - For the *fade strategy* proposed by PointAugmenting(disenable the copy-and-paste augmentation for the last 5 epochs), we currently implement this strategy by manually stop training at 15 epoch and resume the training without copy-and-paste augmentation. If you find more elegant ways to implement such strategy, please let we know and we really appreciate it. The fade strategy reduces lots of false positive, improving the mAP remarkably especially for TransFusion-L while having less influence on TransFusion.  
 
 ## Pretrained 2D Backbones
