@@ -4,7 +4,7 @@
 ## Abstract
 We propose SparseFusion, a novel multi-sensor 3D detection method that exclusively uses sparse candidates and sparse representations. Specifically, SparseFusion utilizes the outputs of parallel detectors in the LiDAR and camera modalities as sparse candidates for fusion. We transform the camera candidates into the LiDAR coordinate space by disentangling the object representations. Then, we can fuse the multi-modality candidates in a unified 3D space by a lightweight self-attention module. To mitigate negative transfer between modalities, we propose novel semantic and geometric cross-modality transfer modules that are applied prior to the modality-specific detectors. SparseFusion achieves state-of-the-art performance on the nuScenes benchmark while also running at the fastest speed.
 
-[[paper link]](https://arxiv.org/abs/2304.14340) [[Chinese summary (自动驾驶之心)]](https://zhuanlan.zhihu.com/p/671293323)
+[[paper link]](https://openaccess.thecvf.com/content/ICCV2023/papers/Xie_SparseFusion_Fusing_Multi-Modal_Sparse_Representations_for_Multi-Sensor_3D_Object_Detection_ICCV_2023_paper.pdf) [[Chinese summary (自动驾驶之心)]](https://zhuanlan.zhihu.com/p/671293323)
 
 ## Updates
 [2023-8-21] Much better training GPU memory efficiency (45GB -> 29GB) with no hurt to the performance and speed!
